@@ -78,6 +78,13 @@ exec_remote() {
 need colab
 need python
 
+# The colab CLI authenticates on every invocation, so route all calls through
+# one wrapper to keep the strategy consistent. Default to ADC (works headlessly
+# from existing gcloud application-default credentials); override with
+# COLAB_AUTH=oauth2 if you have a browser-based OAuth client config.
+COLAB_AUTH="${COLAB_AUTH:-adc}"
+colab() { command colab --auth="$COLAB_AUTH" "$@"; }
+
 python scripts/self_test.py | tee -a "$LOG"
 
 if [[ ! -f "$CONFIG" ]]; then
