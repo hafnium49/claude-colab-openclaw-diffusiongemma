@@ -1,0 +1,36 @@
+{
+  "model": {
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "name": "Qwen 2.5 0.5B Instruct smoke-test model",
+    "reasoning": false,
+    "input": [
+      "text"
+    ],
+    "context_window": 32768,
+    "max_tokens": 1024
+  },
+  "vllm": {
+    "install": true,
+    "install_command": "python -m pip install -U vllm",
+    "install_timeout_seconds": 1800,
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 900,
+    "serve_args": [
+      "--max-num-seqs",
+      "2",
+      "--gpu-memory-utilization",
+      "0.75",
+      "--max-model-len",
+      "8192"
+    ]
+  },
+  "openclaw": {
+    "install": true,
+    "gateway_port": 18789,
+    "gateway_bind": "loopback",
+    "gateway_token": "colab-openclaw-local-token",
+    "vllm_api_key": "vllm-local",
+    "provider_timeout_seconds": 300
+  }
+}

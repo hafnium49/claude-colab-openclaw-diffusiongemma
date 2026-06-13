@@ -1,0 +1,44 @@
+{
+  "model": {
+    "id": "RedHatAI/diffusiongemma-26B-A4B-it-NVFP4",
+    "name": "DiffusionGemma 26B-A4B IT NVFP4",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "context_window": 262144,
+    "max_tokens": 4096
+  },
+  "vllm": {
+    "install": true,
+    "install_command": "python -m pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly/cu129 --extra-index-url https://download.pytorch.org/whl/cu129",
+    "install_timeout_seconds": 3600,
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 2400,
+    "use_v2_model_runner": "1",
+    "hf_transfer": "1",
+    "serve_args": [
+      "--trust-remote-code",
+      "--max-num-seqs",
+      "1",
+      "--gpu-memory-utilization",
+      "0.85",
+      "--generation-config",
+      "vllm",
+      "--hf-overrides",
+      "{\"diffusion_sampler\":\"entropy_bound\",\"diffusion_entropy_bound\":0.1}",
+      "--diffusion-config",
+      "{\"canvas_length\":256}",
+      "--enable-chunked-prefill"
+    ]
+  },
+  "openclaw": {
+    "install": true,
+    "gateway_port": 18789,
+    "gateway_bind": "loopback",
+    "gateway_token": "colab-openclaw-local-token",
+    "vllm_api_key": "vllm-local",
+    "provider_timeout_seconds": 600
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "prompt": "Reply with exactly: openclaw-diffusiongemma-smoke-ok",
+  "transport": "gateway",
+  "timeout_seconds": 900
+}

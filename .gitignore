@@ -1,0 +1,7 @@
+runs/
+*.log
+__pycache__/
+.DS_Store
+
+# Windows/WSL alternate-data-stream artifacts
+*:Zone.Identifier
