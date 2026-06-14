@@ -80,6 +80,28 @@ exec_remote() {
   run colab exec -s "$SESSION" -f "$STUB_SCRIPT" --timeout "$COLAB_EXEC_TIMEOUT"
 }
 
+# Poll the detached bootstrap worker with short, transient-failure-tolerant
+# execs until it reports ready/failed or the budget is exhausted. Must be called
+# under `set +e` (a dropped poll exec is expected and simply retried).
+poll_bootstrap() {
+  local start=$SECONDS out state tmp
+  tmp=$(mktemp); printf '{"action":"bootstrap_status"}' > "$tmp"
+  echo "[poll] waiting up to ${BOOTSTRAP_BUDGET}s for vLLM + gateway readiness" | tee -a "$LOG"
+  while (( SECONDS - start < BOOTSTRAP_BUDGET )); do
+    sleep 15
+    colab upload -s "$SESSION" "$tmp" /content/ocdg_control.json >/dev/null 2>&1
+    out=$(colab exec -s "$SESSION" -f "$STUB_SCRIPT" --timeout 90 2>&1)
+    printf '%s\n' "$out" >> "$LOG"
+    state=$(grep -o 'BOOTSTRAP_STATE=[a-z]*' <<<"$out" | head -1)
+    echo "[poll] +$(( SECONDS - start ))s ${state:-no-status}" | tee -a "$LOG"
+    case "$out" in
+      *BOOTSTRAP_STATE=ready*)  rm -f "$tmp"; echo "[poll] bootstrap READY" | tee -a "$LOG"; return 0 ;;
+      *BOOTSTRAP_STATE=failed*) rm -f "$tmp"; echo "[poll] bootstrap FAILED" | tee -a "$LOG"; return 1 ;;
+    esac
+  done
+  rm -f "$tmp"; echo "[poll] bootstrap budget exhausted" | tee -a "$LOG"; return 1
+}
+
 need colab
 need python
 
@@ -108,6 +130,11 @@ trap cleanup EXIT
 # (DiffusionGemma's install + weight download + load). Override per run if needed.
 COLAB_EXEC_TIMEOUT="${COLAB_EXEC_TIMEOUT:-7200}"
 
+# How long (seconds) to poll for bootstrap readiness. On accounts where the
+# Colab keep-alive can't run, the VM is reclaimed ~10 min after creation, so the
+# whole job must finish inside that window — keep this comfortably under it.
+BOOTSTRAP_BUDGET="${BOOTSTRAP_BUDGET:-420}"
+
 python scripts/self_test.py | tee -a "$LOG"
 
 if [[ ! -f "$CONFIG" ]]; then
@@ -123,9 +150,19 @@ run colab upload -s "$SESSION" "$REMOTE_SCRIPT" /content/remote_colab_openclaw_d
 run colab upload -s "$SESSION" "$CONFIG" /content/ocdg_config.json
 run colab upload -s "$SESSION" "$TASK" /content/ocdg_task.json
 
+# Phases are best-effort from here: the VM has a limited lifetime (no working
+# keep-alive on this account), so we must always reach the download + teardown
+# below even if a phase fails or the runtime is reclaimed mid-flight.
+set +e
+
+# 1) Launch the bootstrap worker DETACHED (fast exec), then poll until vLLM and
+#    the gateway are ready — keeping every exec short instead of holding one open
+#    for the whole multi-minute install.
 upload_control bootstrap
 exec_remote
+poll_bootstrap
 
+# 2) Run the prompt and bundle the results (tolerant of a reclaimed runtime).
 upload_control prompt
 exec_remote
 

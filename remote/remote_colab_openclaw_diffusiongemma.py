@@ -26,6 +26,9 @@ CONFIG_PATH = BASE / 'ocdg_config.json'
 CONTROL_PATH = BASE / 'ocdg_control.json'
 TASK_PATH = BASE / 'ocdg_task.json'
 ZIP_PATH = BASE / 'openclaw_diffusiongemma_results.zip'
+STATUS_PATH = RESULTS / 'bootstrap_status.json'
+DONE_PATH = RESULTS / 'bootstrap.done'
+SELF_PATH = BASE / 'remote_colab_openclaw_diffusiongemma.py'
 
 
 def now() -> str:
@@ -43,6 +46,13 @@ def load_json(path: Path, default: Optional[Dict[str, Any]] = None) -> Dict[str,
 def write_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding='utf-8')
+
+
+def write_status(stage: str, extra: Optional[Dict[str, Any]] = None) -> None:
+    data: Dict[str, Any] = {'stage': stage, 'time': now()}
+    if extra:
+        data.update(extra)
+    write_json(STATUS_PATH, data)
 
 
 def append(path: Path, text: str) -> None:
@@ -217,15 +227,65 @@ def start_openclaw_gateway(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def bootstrap() -> None:
+    """Fast action: launch the heavy bootstrap DETACHED and return immediately.
+
+    A `colab exec` cannot be held open for the minutes the install takes (the
+    kernel websocket drops, and without a working keep-alive the VM is reclaimed
+    ~10 min in), so the real work runs as a detached worker process and the
+    launcher polls `bootstrap_status` instead of blocking on one long exec.
+    """
     RESULTS.mkdir(parents=True, exist_ok=True)
-    config = load_json(CONFIG_PATH)
+    for marker in (DONE_PATH, STATUS_PATH):
+        if marker.exists():
+            marker.unlink()
+    write_status('launching')
+    worker_log = (RESULTS / 'bootstrap_worker.log').open('a', encoding='utf-8')
+    subprocess.Popen(
+        [sys.executable, str(SELF_PATH), '--worker', 'bootstrap'],
+        stdout=worker_log, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    print('BOOTSTRAP_LAUNCHED')
+
+
+def _bootstrap_run() -> None:
+    """Heavy bootstrap, executed detached on the VM (not inside a colab exec).
+
+    Installs vLLM and OpenClaw in parallel to fit short VM windows, starts vLLM,
+    configures OpenClaw against it, and starts the gateway. Progress is written
+    to bootstrap_status.json and completion (ok flag) to bootstrap.done.
+    """
+    RESULTS.mkdir(parents=True, exist_ok=True)
     manifest: Dict[str, Any] = {'started_at': now(), 'action': 'bootstrap', 'steps': []}
     try:
+        write_status('environment')
         collect_environment()
+        config = load_json(CONFIG_PATH)
+
+        # Overlap the two slow downloads: kick OpenClaw's installer off in the
+        # background, install vLLM in the foreground, then join.
+        write_status('installing')
+        ocfg = config.get('openclaw', {})
+        oc_proc = None
+        oc_log = None
+        if ocfg.get('install', True):
+            oc_cmd = 'curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard'
+            oc_log = (RESULTS / 'openclaw_install.log').open('a', encoding='utf-8')
+            oc_log.write(f"\n[{now()}] $ {oc_cmd}\n")
+            oc_log.flush()
+            oc_proc = subprocess.Popen(oc_cmd, shell=True, executable='/bin/bash',
+                                       stdout=oc_log, stderr=subprocess.STDOUT)
         install_vllm(config)
+        if oc_proc is not None:
+            oc_proc.wait()
+            oc_log.flush()
+            oc_log.close()
+        run('export PATH="$(npm prefix -g)/bin:$PATH"; openclaw --version', 'openclaw_install.log', check=False, timeout=60)
+
+        write_status('starting_vllm')
         vllm_state = start_vllm(config)
         manifest['vllm'] = vllm_state
-        install_openclaw(config)
+
+        write_status('configuring_openclaw')
         openclaw_state = configure_openclaw(config, vllm_state)
         manifest['openclaw_config'] = openclaw_state
         gateway_state = start_openclaw_gateway(config)
@@ -237,7 +297,41 @@ def bootstrap() -> None:
         append(RESULTS / 'error.log', f"[{now()}] {exc!r}\n")
     manifest['finished_at'] = now()
     write_json(RESULTS / 'manifest.json', manifest)
+    ok = bool(manifest.get('ok'))
+    write_status('done', {'ok': ok})
+    DONE_PATH.write_text(json.dumps({'ok': ok, 'time': now()}), encoding='utf-8')
     bundle()
+
+
+def bootstrap_status() -> None:
+    """Fast action: report bootstrap progress for the launcher's poll loop."""
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    detail: Dict[str, Any] = {}
+    if DONE_PATH.exists():
+        try:
+            done = json.loads(DONE_PATH.read_text(encoding='utf-8'))
+        except Exception:
+            done = {'ok': False}
+        detail['done'] = done
+        state = 'ready' if done.get('ok') else 'failed'
+    else:
+        if STATUS_PATH.exists():
+            try:
+                detail['status'] = json.loads(STATUS_PATH.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        state = 'running'
+    try:
+        config = load_json(CONFIG_PATH)
+        vcfg = config.get('vllm', {})
+        host = vcfg.get('host', '127.0.0.1')
+        port = int(vcfg.get('port', 8000))
+        http_get_json(f'http://{host}:{port}/v1/models', timeout_s=3)
+        detail['vllm_up'] = True
+    except Exception:
+        detail['vllm_up'] = False
+    print('BOOTSTRAP_STATE=' + state)
+    print('BOOTSTRAP_DETAIL=' + json.dumps(detail))
 
 
 def prompt() -> None:
@@ -293,10 +387,18 @@ def bundle() -> None:
 
 
 def main() -> None:
+    # Detached worker entrypoint: `python remote_...py --worker bootstrap`.
+    if len(sys.argv) >= 3 and sys.argv[1] == '--worker':
+        if sys.argv[2] == 'bootstrap':
+            _bootstrap_run()
+            return
+        raise ValueError(f'Unknown worker: {sys.argv[2]}')
     control = load_json(CONTROL_PATH, default={'action': 'status'})
     action = control.get('action', 'status')
     if action == 'bootstrap':
         bootstrap()
+    elif action == 'bootstrap_status':
+        bootstrap_status()
     elif action == 'prompt':
         prompt()
     elif action == 'status':
