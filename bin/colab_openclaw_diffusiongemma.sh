@@ -72,7 +72,12 @@ JSON
 }
 
 exec_remote() {
-  run colab exec -s "$SESSION" -f "$STUB_SCRIPT"
+  # `colab exec` defaults to a 30s code-execution timeout, but the bootstrap
+  # phase (pip-install vLLM, download + load the model, start the gateway) runs
+  # for many minutes. Without a generous --timeout the websocket is cut off
+  # mid-bootstrap ("Connection was lost"). The remote script enforces its own
+  # per-step timeouts, so this is just a safe upper bound on the whole phase.
+  run colab exec -s "$SESSION" -f "$STUB_SCRIPT" --timeout "$COLAB_EXEC_TIMEOUT"
 }
 
 need colab
@@ -84,6 +89,10 @@ need python
 # COLAB_AUTH=oauth2 if you have a browser-based OAuth client config.
 COLAB_AUTH="${COLAB_AUTH:-adc}"
 colab() { command colab --auth="$COLAB_AUTH" "$@"; }
+
+# Upper bound (seconds) for each `colab exec`; must exceed the slowest phase
+# (DiffusionGemma's install + weight download + load). Override per run if needed.
+COLAB_EXEC_TIMEOUT="${COLAB_EXEC_TIMEOUT:-7200}"
 
 python scripts/self_test.py | tee -a "$LOG"
 
