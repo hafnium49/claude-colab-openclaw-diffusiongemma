@@ -152,7 +152,12 @@ def start_vllm(config: Dict[str, Any]) -> Dict[str, Any]:
         args.extend(['--api-key', shlex.quote(str(vcfg['api_key']))])
 
     export_prefix = ' '.join(f"export {k}={shlex.quote(v)};" for k, v in env_exports.items())
-    cmd = f"{export_prefix} nohup {' '.join(args)} > {RESULTS}/vllm.log 2>&1 & echo $! > {RESULTS}/vllm.pid"
+    # Ensure the CUDA runtime libs from the nvidia-* pip packages (e.g.
+    # libcudart.so.13) are on the loader path, otherwise `import vllm._C` fails
+    # with "libcudart.so.13: cannot open shared object file".
+    ld_glob = "$(ls -d /usr/local/lib/python*/dist-packages/nvidia/*/lib 2>/dev/null | tr '\\n' ':')"
+    ld_fix = 'export LD_LIBRARY_PATH="' + ld_glob + '${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; '
+    cmd = f"{ld_fix}{export_prefix} nohup {' '.join(args)} > {RESULTS}/vllm.log 2>&1 & echo $! > {RESULTS}/vllm.pid"
     run(cmd, 'vllm_start.log', check=True, timeout=60)
     ok = wait_for_url(f'http://{host}:{port}/v1/models', max_wait, 'vllm_start.log')
     return {'ok': ok, 'base_url': f'http://{host}:{port}/v1', 'model_id': model_id, 'pid_file': str(RESULTS / 'vllm.pid')}
@@ -168,7 +173,8 @@ def install_openclaw(config: Dict[str, Any]) -> None:
 def configure_openclaw(config: Dict[str, Any], vllm_state: Dict[str, Any]) -> Dict[str, Any]:
     ocfg = config.get('openclaw', {})
     model_id = config['model']['id']
-    model_ref = ocfg.get('model_ref') or f'vllm/{model_id}'
+    provider_id = ocfg.get('provider_id', 'vllm')
+    model_ref = ocfg.get('model_ref') or f'{provider_id}/{model_id}'
     gateway_port = int(ocfg.get('gateway_port', 18789))
     gateway_token = os.environ.get('OPENCLAW_GATEWAY_TOKEN') or ocfg.get('gateway_token') or 'colab-openclaw-local-token'
     os.environ['OPENCLAW_GATEWAY_TOKEN'] = gateway_token
@@ -177,48 +183,32 @@ def configure_openclaw(config: Dict[str, Any], vllm_state: Dict[str, Any]) -> Di
     env = {'OPENCLAW_GATEWAY_TOKEN': gateway_token, 'VLLM_API_KEY': os.environ['VLLM_API_KEY']}
     path_prefix = 'export PATH="$(npm prefix -g)/bin:$PATH"; '
 
-    # Capture the real CLI surface so onboarding/config/provider flags can be
-    # verified against the installed OpenClaw instead of assumed.
-    for hc in ('openclaw --version', 'openclaw --help', 'openclaw onboard --help',
-               'openclaw config --help', 'openclaw infer --help'):
-        run(path_prefix + hc, 'openclaw_help.log', check=False, env=env, timeout=60)
-
+    # A single non-interactive `onboard` configures the custom vLLM provider, the
+    # default model, AND the loopback token gateway in one shot. Validated live
+    # against OpenClaw 2026.6.6: `--accept-risk` is REQUIRED with
+    # `--non-interactive`, and `--auth-choice custom-api-key` + the `--custom-*`
+    # flags write models.providers.<id> and agents.defaults.model directly — so
+    # no separate `config set` calls are needed (the old `--merge` flag doesn't
+    # even exist on this CLI). `--skip-daemon` keeps the gateway out of
+    # systemd/launchd (unavailable in the Colab container); we start it manually.
     onboard = (
         path_prefix
-        + 'openclaw onboard --non-interactive --mode local --auth-choice skip '
+        + 'openclaw onboard --non-interactive --accept-risk --mode local '
+        + '--auth-choice custom-api-key '
+        + f'--custom-provider-id {shlex.quote(provider_id)} '
+        + f'--custom-base-url {shlex.quote(vllm_state["base_url"])} '
+        + f'--custom-model-id {shlex.quote(model_id)} '
+        + '--custom-compatibility openai --custom-api-key "${VLLM_API_KEY}" --custom-text-input '
         + f'--gateway-port {gateway_port} --gateway-bind loopback '
         + '--gateway-auth token --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN '
-        + '--skip-skills --json'
+        + '--skip-daemon --skip-skills --skip-channels --skip-health --skip-ui --json'
     )
     run(onboard, 'openclaw_config.log', check=False, env=env, timeout=300)
+    # Record the resulting config + model catalog for diagnostics.
+    run(path_prefix + 'openclaw config file', 'openclaw_config.log', check=False, env=env, timeout=60)
+    run(path_prefix + 'openclaw models list --json', 'openclaw_models.log', check=False, env=env, timeout=120)
 
-    provider_cfg = {
-        'baseUrl': vllm_state['base_url'],
-        'apiKey': '${VLLM_API_KEY}',
-        'api': 'openai-completions',
-        'timeoutSeconds': int(ocfg.get('provider_timeout_seconds', 600)),
-        'models': [
-            {
-                'id': model_id,
-                'name': config['model'].get('name', model_id),
-                'reasoning': bool(config['model'].get('reasoning', True)),
-                'input': config['model'].get('input', ['text']),
-                'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
-                'contextWindow': int(config['model'].get('context_window', 262144)),
-                'maxTokens': int(config['model'].get('max_tokens', 4096)),
-            }
-        ],
-    }
-    provider_json = json.dumps(provider_cfg)
-    visible_json = json.dumps({model_ref: {}})
-    primary_json = json.dumps({'primary': model_ref})
-
-    run(path_prefix + 'openclaw config set models.providers.vllm ' + shlex.quote(provider_json) + ' --strict-json --merge', 'openclaw_config.log', check=False, env=env, timeout=120)
-    run(path_prefix + 'openclaw config set agents.defaults.models ' + shlex.quote(visible_json) + ' --strict-json --merge', 'openclaw_config.log', check=False, env=env, timeout=120)
-    run(path_prefix + 'openclaw config set agents.defaults.model ' + shlex.quote(primary_json) + ' --strict-json --merge', 'openclaw_config.log', check=False, env=env, timeout=120)
-    run(path_prefix + 'openclaw models list --provider vllm --json', 'openclaw_models.log', check=False, env=env, timeout=120)
-
-    return {'model_ref': model_ref, 'gateway_port': gateway_port, 'gateway_token_set': bool(gateway_token)}
+    return {'model_ref': model_ref, 'provider_id': provider_id, 'gateway_port': gateway_port, 'gateway_token_set': bool(gateway_token)}
 
 
 def start_openclaw_gateway(config: Dict[str, Any]) -> Dict[str, Any]:

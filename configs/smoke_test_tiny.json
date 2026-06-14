@@ -11,7 +11,7 @@
   },
   "vllm": {
     "install": true,
-    "install_command": "python -m pip install -U uv && uv pip install --system --torch-backend auto vllm",
+    "install_command": "python -m pip install -U uv && (python -m pip uninstall -y torch torchvision torchaudio || true) && uv pip install --system --torch-backend auto vllm",
     "install_timeout_seconds": 1800,
     "host": "127.0.0.1",
     "port": 8000,
@@ -22,7 +22,8 @@
       "--gpu-memory-utilization",
       "0.75",
       "--max-model-len",
-      "8192"
+      "8192",
+      "--enforce-eager"
     ]
   },
   "openclaw": {
