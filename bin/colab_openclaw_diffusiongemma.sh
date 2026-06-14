@@ -88,7 +88,21 @@ need python
 # from existing gcloud application-default credentials); override with
 # COLAB_AUTH=oauth2 if you have a browser-based OAuth client config.
 COLAB_AUTH="${COLAB_AUTH:-adc}"
-colab() { command colab --auth="$COLAB_AUTH" "$@"; }
+# Isolate this run's session state in a per-run scratch file so a concurrent
+# `colab` command (e.g. a status check from another shell) can't race on the
+# shared default state and prune this run's live session. The keep-alive daemon
+# inherits --auth and --config automatically.
+COLAB_CONFIG="${COLAB_CONFIG:-$OUT_DIR/colab_session_state.json}"
+colab() { command colab --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" "$@"; }
+
+# Tear the session down on ANY exit (success or a set -e abort mid-phase) unless
+# --keep-session was given, so a failed phase can't leak a billable VM.
+cleanup() {
+  if [[ "$KEEP_SESSION" -eq 0 ]]; then
+    colab stop -s "$SESSION" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 # Upper bound (seconds) for each `colab exec`; must exceed the slowest phase
 # (DiffusionGemma's install + weight download + load). Override per run if needed.
