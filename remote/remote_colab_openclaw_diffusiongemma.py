@@ -177,6 +177,12 @@ def configure_openclaw(config: Dict[str, Any], vllm_state: Dict[str, Any]) -> Di
     env = {'OPENCLAW_GATEWAY_TOKEN': gateway_token, 'VLLM_API_KEY': os.environ['VLLM_API_KEY']}
     path_prefix = 'export PATH="$(npm prefix -g)/bin:$PATH"; '
 
+    # Capture the real CLI surface so onboarding/config/provider flags can be
+    # verified against the installed OpenClaw instead of assumed.
+    for hc in ('openclaw --version', 'openclaw --help', 'openclaw onboard --help',
+               'openclaw config --help', 'openclaw infer --help'):
+        run(path_prefix + hc, 'openclaw_help.log', check=False, env=env, timeout=60)
+
     onboard = (
         path_prefix
         + 'openclaw onboard --non-interactive --mode local --auth-choice skip '

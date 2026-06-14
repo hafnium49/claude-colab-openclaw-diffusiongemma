@@ -11,7 +11,7 @@
   },
   "vllm": {
     "install": true,
-    "install_command": "python -m pip install -U vllm",
+    "install_command": "python -m pip install -U uv && uv pip install --system --torch-backend auto vllm",
     "install_timeout_seconds": 1800,
     "host": "127.0.0.1",
     "port": 8000,
