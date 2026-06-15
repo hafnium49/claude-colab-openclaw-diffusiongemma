@@ -71,9 +71,11 @@ cat ./runs/openclaw-dg/manifest.json 2>/dev/null || true
 
 ## Validated path and gotchas (2026-06-15)
 
-The standard `bin/` workflow above is the intended product, but it has **not** yet been made
-to pass end-to-end on this account; the validated path is the dev harness. Full details in
-`docs/validation_findings.md`. Key points:
+The dev harness (`runs/dev/e2e.sh`) is **confirmed green** end-to-end on a Colab T4 (run #6,
+2026-06-15: `infer_ok=true`, model returns `openclaw-vllm-ok`). The standard `bin/` workflow
+above is the intended product but still uses the older single-exec/detached design and has
+**not** been refactored to this proven path yet. Full details in `docs/validation_findings.md`.
+Key points:
 
 - **Run the proven harness:** `bash runs/dev/e2e.sh` provisions a T4 and runs the validated
   decoupled flow (`e2e_boot.py` → `e2e_poll.py` ×N → `e2e_finish.py`). Success =

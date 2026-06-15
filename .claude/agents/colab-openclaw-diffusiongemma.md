@@ -42,8 +42,10 @@ Failure handling:
 
 ## Validated operating notes (2026-06-15)
 
-These were learned by actually running the pipeline on a Colab T4. See
-`docs/validation_findings.md` for the full record. They override the idealized assumptions above.
+These were learned by actually running the pipeline on a Colab T4 — the small-model
+end-to-end is **confirmed green** (run #6, 2026-06-15: `openclaw infer model run --gateway`
+returned `infer_ok=true`, output `openclaw-vllm-ok`). See `docs/validation_findings.md` for
+the full record. They override the idealized assumptions above.
 
 1. **Auth:** call the CLI as `colab --auth=adc --config <isolated-state-file> …`. Default
    `oauth2` hangs; ADC needs the `colaboratory` scope. Never run a second concurrent `colab`
