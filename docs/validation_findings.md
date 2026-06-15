@@ -8,12 +8,14 @@ Last updated: 2026-06-15. Account: free-tier consumer Colab (`hafnium49@gmail.co
 
 ## TL;DR
 
-- **All infrastructure stages are validated green on a Colab T4** with a small model
-  (`Qwen/Qwen2.5-0.5B-Instruct`): vLLM install + serve + inference, OpenClaw install +
-  onboard + gateway, and request routing OpenClaw→vLLM.
-- **The full green (`infer_ok=true` through the OpenClaw gateway) required two OpenClaw
-  fixes** beyond onboard: a content-format compat flag and a token-budget alignment
-  (details below).
+- **✅ FULL END-TO-END GREEN achieved (run #6, 2026-06-15)** on a free Colab T4 with a small
+  model (`Qwen/Qwen2.5-0.5B-Instruct`): `openclaw infer model run --gateway` returned
+  `{"ok": true, "transport": "gateway", "provider": "vllm", "outputs":[{"text":"openclaw-vllm-ok"}]}`
+  (`infer_rc=0`, `infer_ok=true`). Whole pipeline — provision → install → serve → onboard →
+  gateway → infer → download → teardown — runs in ~11 min, no VM reclaim, no websocket drop,
+  no leaked session.
+- **The full green required two OpenClaw fixes** beyond onboard (a content-format compat flag
+  and a token-budget alignment) **plus** the decoupled short-exec architecture (details below).
 - **The orchestration had to be re-architected** from "one long `colab exec`" to a
   **decoupled short-exec** design, because a single streaming exec drops (`Connection was
   lost`) around ~10.5–11 min and the vLLM cold start alone is ~7 min.
@@ -150,6 +152,7 @@ the decoupled short-exec architecture even more necessary.
 
 ## Open items
 
-- [ ] Land `infer_ok=true` on T4 via the decoupled harness (in progress as of 2026-06-15).
-- [ ] Refactor `bin/` + `remote/` from detached-bootstrap+sparse-poll to the short-exec model.
-- [ ] Obtain an L4/A100 and run the real DiffusionGemma profile.
+- [x] Land `infer_ok=true` on T4 via the decoupled harness — **done, run #6, 2026-06-15.**
+- [ ] Refactor `bin/` + `remote/` from detached-bootstrap+sparse-poll to the short-exec model
+      (port `e2e_boot.py`/`e2e_poll.py`/`e2e_finish.py` into the launcher; update `self_test.py`).
+- [ ] Obtain an L4/A100 and run the real DiffusionGemma profile (only remaining blocker is GPU).
