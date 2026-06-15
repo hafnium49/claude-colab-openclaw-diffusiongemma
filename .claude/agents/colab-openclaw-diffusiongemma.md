@@ -39,3 +39,33 @@ Failure handling:
 - If the GPU is too small, surface the CUDA/vLLM error from `vllm.log` and recommend the smoke-test config or a larger GPU.
 - If OpenClaw config fails, still collect vLLM health, OpenClaw install logs, and the manifest zip.
 - If artifact download fails, use `colab ls` to inspect `/content/ocdg_results` and retry download.
+
+## Validated operating notes (2026-06-15)
+
+These were learned by actually running the pipeline on a Colab T4. See
+`docs/validation_findings.md` for the full record. They override the idealized assumptions above.
+
+1. **Auth:** call the CLI as `colab --auth=adc --config <isolated-state-file> …`. Default
+   `oauth2` hangs; ADC needs the `colaboratory` scope. Never run a second concurrent `colab`
+   command against the same state file during a live run — it can prune the session.
+2. **Do NOT use one long `colab exec`.** A single streaming exec drops (`Connection was lost`)
+   around ~10.5–11 min, and the vLLM cold start alone is ~7 min. Use the **decoupled
+   short-exec** pattern: `boot` (install + onboard + config + launch `vllm serve` detached,
+   exit ~3 min) → frequent short `poll` execs (~5 s every ~30 s, keep the kernel active and
+   detect readiness) → `finish` (gateway + infer, ~30 s). No exec waits through the warmup.
+3. **vLLM cu13 fix:** remove preinstalled `torch+cu128`, then
+   `uv pip install --system --torch-backend auto vllm` (gets `+cu130`); serve with
+   `LD_LIBRARY_PATH` to the nvidia pip libs and `--enforce-eager`.
+4. **OpenClaw infer needs two fixes after onboard** (set via `openclaw config set`, only the
+   `models.providers.<id>.models[0]...` index form is valid — `[]` errors):
+   `compat.requiresStringContent true` (+ `compat.supportsTools false`) and a token budget
+   where model `maxTokens` < vLLM `--max-model-len` (e.g. serve `8192`, set `maxTokens 1024`).
+   Without these the gateway returns `incomplete_result` (empty completion / `reason=overflow`).
+5. **Diagnose with a direct vLLM probe.** A raw `/v1/chat/completions` call (with the API key)
+   isolates vLLM from OpenClaw — if it returns clean text with `finish_reason=stop`, any
+   failure is OpenClaw-side config, not the model.
+6. **This account has no L4 entitlement** (`Backend rejected accelerator 'L4'`), so the real
+   DiffusionGemma target cannot run here — only the T4 small-model validation. Say so plainly.
+7. **Proven path right now is the dev harness** `runs/dev/e2e.sh` (+ `e2e_boot.py` /
+   `e2e_poll.py` / `e2e_finish.py`), not the committed `bin/` launcher, which still uses the
+   older detached+sparse-poll design and needs refactoring to the short-exec model.
