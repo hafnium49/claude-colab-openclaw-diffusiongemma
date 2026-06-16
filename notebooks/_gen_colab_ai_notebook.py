@@ -134,6 +134,7 @@ subprocess.run("curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onbo
 # OpenAI-compatible shim over google.colab.ai — defined AND served IN THIS KERNEL PROCESS so the
 # proxy key primed in cell 1 stays usable (a detached subprocess could not fetch it).
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from google.colab import ai
 import uvicorn
 
@@ -156,8 +157,22 @@ async def _chat(req: Request):
     prompt = "\n\n".join(f"{m.get('role','user')}: {_content(m)}" for m in msgs) or "Hello"
     try:    text = ai.generate_text(prompt, model_name=AI_MODEL)   # text-to-text, non-streaming
     except Exception as e:  text = "[colab_ai error] " + repr(e)
-    return {"id": "chatcmpl-colabai", "object": "chat.completion", "created": int(time.time()),
-            "model": body.get("model") or AI_MODEL,
+    created, model = int(time.time()), (body.get("model") or AI_MODEL)
+    # OpenClaw's `infer` requests stream:true -> we MUST answer with Server-Sent Events (one full
+    # delta chunk + a finish chunk + [DONE]); a plain JSON body makes OpenClaw report
+    # "Stream ended without finish_reason" and drop the text. (llama.cpp works because it streams.)
+    if body.get("stream"):
+        def _sse():
+            head = {"id": "chatcmpl-colabai", "object": "chat.completion.chunk", "created": created,
+                    "model": model, "choices": [{"index": 0,
+                    "delta": {"role": "assistant", "content": text}, "finish_reason": None}]}
+            tail = {"id": "chatcmpl-colabai", "object": "chat.completion.chunk", "created": created,
+                    "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            yield "data: " + json.dumps(head) + "\n\n"
+            yield "data: " + json.dumps(tail) + "\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_sse(), media_type="text/event-stream")
+    return {"id": "chatcmpl-colabai", "object": "chat.completion", "created": created, "model": model,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
                          "finish_reason": "stop"}], "usage": {}}
 

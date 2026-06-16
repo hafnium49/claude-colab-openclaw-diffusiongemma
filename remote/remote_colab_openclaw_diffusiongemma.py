@@ -301,10 +301,11 @@ def start_llama_cpp(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, A
 COLAB_AI_SHIM = r'''
 import os, json, time
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 import uvicorn
 from google.colab import ai
 
-MODEL = os.environ.get("COLAB_AI_MODEL", "google/gemini-2.5-flash")
+MODEL = os.environ.get("COLAB_AI_MODEL", "google/gemini-3.5-flash")
 app = FastAPI()
 
 @app.get("/v1/models")
@@ -328,8 +329,21 @@ async def _chat(req: Request):
         text = ai.generate_text(prompt, model_name=MODEL)   # text-to-text; non-streaming
     except Exception as e:
         text = "[colab_ai error] " + repr(e)
-    return {"id": "chatcmpl-colabai", "object": "chat.completion", "created": int(time.time()),
-            "model": body.get("model") or MODEL,
+    created, model = int(time.time()), (body.get("model") or MODEL)
+    # OpenClaw's infer requests stream:true -> answer with SSE (full delta + finish + [DONE]),
+    # else it reports "Stream ended without finish_reason" and drops the text.
+    if body.get("stream"):
+        def _sse():
+            head = {"id": "chatcmpl-colabai", "object": "chat.completion.chunk", "created": created,
+                    "model": model, "choices": [{"index": 0,
+                    "delta": {"role": "assistant", "content": text}, "finish_reason": None}]}
+            tail = {"id": "chatcmpl-colabai", "object": "chat.completion.chunk", "created": created,
+                    "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            yield "data: " + json.dumps(head) + "\n\n"
+            yield "data: " + json.dumps(tail) + "\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(_sse(), media_type="text/event-stream")
+    return {"id": "chatcmpl-colabai", "object": "chat.completion", "created": created, "model": model,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
             "usage": {}}
 
