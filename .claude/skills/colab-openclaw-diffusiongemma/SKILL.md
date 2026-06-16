@@ -96,3 +96,25 @@ Key points:
 - **GPU reality:** L4 is **not entitled** on this free account, so DiffusionGemma-26B cannot
   run here — only the T4 small-model (`Qwen/Qwen2.5-0.5B-Instruct`) validation. DiffusionGemma
   needs Colab Pro/Enterprise or a rented L4/A100.
+
+## llama.cpp / Qwen3.5-9B + notebook counterpart (2026-06-16)
+
+The vLLM green above was only **0.5B**. **vLLM can't serve ≥3B on a T4** (Turing/sm_75 +
+FlashInfer `BatchPrefillWithPagedKVCache` crash), so the **Qwen3.5-9B** floor model runs via
+**llama.cpp** — confirmed green (OpenClaw → llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). Full
+recipe in `docs/t4_llama_cpp_serving.md`.
+
+- **Master harness:** `runs/dev/relaunch.sh` (→ `llama_boot.py`/`llama_poll.py`/`llama_finish.py`)
+  provisions a T4, serves the GGUF on `127.0.0.1:8000` via the **prebuilt** `llama-cpp-python[server]`
+  cu124 wheel (no on-VM compile), onboards OpenClaw, verifies infer, and **leaves the session up**.
+- **Port `:8000`, not `:8080`** (Colab's `node` owns 8080). **openclaw via absolute path**
+  (`shutil.which("openclaw") or "/usr/bin/openclaw"`). **Chat = direct infer** (no `--gateway`):
+  `runs/dev/chat.py "your message"`.
+- **No browser attach to a CLI VM:** Colab hands a fresh CPU runtime instead (notebook-hash bind
+  + ignored `dbu` dev flag). The `:18789` dashboard needs a tunnel **or** a browser-owned runtime
+  (`serve_kernel_port_as_iframe`). T4 can return `503` (GPU cooldown) after heavy same-day use.
+- **Notebook counterpart:** `notebooks/openclaw_chat_colab.ipynb` (built by
+  `notebooks/_gen_notebook.py`) mirrors the harness phases as Run-all cells (install → serve →
+  onboard → chat → autonomous task → inline dashboard). **The bash harness is master; mirror the
+  notebook to it, not the reverse.** Roadmap: fee-free self-hosted LLM running autonomous,
+  human-free jobs (deep research) — cell 5 scaffolds it.

@@ -1,162 +1,197 @@
 #!/usr/bin/env python3
-"""Generate notebooks/openclaw_chat_colab.ipynb from the proven vLLM+OpenClaw recipe.
-Authoring .ipynb JSON by hand is error-prone; build it with json.dump so it's always valid.
+"""Generate notebooks/openclaw_chat_colab.ipynb — the NOTEBOOK COUNTERPART of the master bash
+harness.
 
-This is the self-contained, browser-run path: open it in Colab, Run all, chat. The open tab
-supplies the runtime heartbeat (so the VM stays alive — the headless CLI couldn't), and there
-is NO Cloudflare, NO tunnel, NO copy-pasting snippets. Each chat cell is self-contained so it
-can't hit the cross-cell NameError."""
+  MASTER (source of truth):  runs/dev/relaunch.sh  ->  llama_boot.py / llama_poll.py /
+                             llama_finish.py   (drives a Colab VM from outside, headless,
+                             via the colab CLI — this is what gets deployed autonomously).
+
+  THIS NOTEBOOK (counterpart): the SAME phases, but as in-Colab cells you Run-all. Useful for
+                             interactive testing and for surfacing the OpenClaw dashboard
+                             inline (only possible when *your* browser owns the runtime).
+
+KEEP THEM IN SYNC. If you change the model, ports, wheel, or OpenClaw flags, change the bash
+harness FIRST (it is master) and mirror here. Authoring .ipynb JSON by hand is error-prone, so
+this builds it with json.dump (always valid).
+
+Roadmap context: the end goal is OpenClaw in a Colab sandbox with NO LLM API fee (the LLM is
+self-hosted via llama.cpp + a local GGUF — never a paid API) running long, autonomous workloads
+(e.g. deep research) with no human in the loop. Self-hosting is what makes that fee-free; the
+chat cell here is just a smoke test of the same stack.
+"""
 import json, os
+
+# Single source for the knobs the bash harness also uses — change in lockstep with the harness.
+WHEEL = "llama-cpp-python[server]==0.3.29"
+WHEEL_INDEX = "https://abetlen.github.io/llama-cpp-python/whl/cu124"
+MODEL_REPO = "lmstudio-community/Qwen3.5-9B-GGUF"
+MODEL_FILE = "Qwen3.5-9B-Q4_K_M.gguf"
+MODEL_ID = "Qwen3.5-9B"
+LLM_PORT = "8000"
+GW_PORT = "18789"
 
 cells = []
 def md(s):   cells.append({"cell_type": "markdown", "metadata": {}, "source": s})
 def code(s): cells.append({"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [], "source": s})
 
-md("""# Chat with OpenClaw + vLLM on Colab (single instance, no tunnel)
+md(f"""# OpenClaw + self-hosted {MODEL_ID} on Colab — notebook counterpart of the master bash harness
 
-Run this notebook **in Colab** to host an LLM (vLLM) + **OpenClaw** in one GPU instance and
-chat with it from notebook cells. No Cloudflare, no GitHub, no copy-pasting — just **Run all**.
+**The bash harness is master.** This notebook mirrors, as Run-all cells, what
+`runs/dev/relaunch.sh` does headlessly from outside via the `colab` CLI
+(`llama_boot.py` → `llama_poll.py` → `llama_finish.py`). Use the bash harness for the real,
+autonomous deployment; use this notebook for interactive testing and for the inline dashboard.
 
-**Setup (do this first):**
-1. `Runtime → Change runtime type → T4 GPU`  →  Save
-2. `Runtime → Run all`  (or run the cells top to bottom)
-3. Keep this tab open — that open tab is what keeps the VM alive.
+**Setup:** `Runtime → Change runtime type → T4 GPU` → Save, then `Runtime → Run all`. Keep the
+tab open (your browser is the runtime heartbeat). First run installs everything + downloads the
+{MODEL_FILE} model (~6 min, one time).""")
 
-The first run installs vLLM + OpenClaw and does a one-time ~7-min model warmup. After that,
-go to the **Chat** cell near the bottom, edit `MESSAGE`, and re-run it for each turn.""")
+md(f"""## 📋 Briefing — what & why
 
-md("""## 📋 Briefing — what this is and why
+**Goal / roadmap.** Run OpenClaw in a Colab sandbox with **no LLM API fee** and have it perform
+long, autonomous jobs (e.g. **deep research**) **without human tasks**. The fee-free part comes
+from **self-hosting the LLM** (llama.cpp serving a local GGUF on loopback) instead of calling a
+paid API. This notebook stands up that exact stack; the chat cell is a smoke test of it.
 
-**Goal:** host an LLM (**vLLM**) + **OpenClaw** (an agent gateway + chat UI) inside **one Colab
-GPU instance** and chat with it — controlled entirely from this notebook, no external services.
+**Why llama.cpp, not vLLM.** On a Colab **T4** (Turing/sm_75) vLLM's FlashInfer backend
+**crashes** on ≥3B Qwen models, so the agent-grade floor model **{MODEL_ID}** can't be served via
+vLLM there. llama.cpp has no paged-KV kernel and serves it (~35 tok/s, 4-bit). The prebuilt
+`llama-cpp-python` CUDA wheel avoids any on-VM compile. See `docs/t4_llama_cpp_serving.md`.
 
-**Why a small model here, not DiffusionGemma?** The original target,
-`diffusiongemma-26B-A4B-it-NVFP4`, is quantized in **NVFP4** — an NVIDIA *Blackwell-only*
-format. It needs a ≥~24 GB NVIDIA GPU (L4 / A100 / Blackwell) and **cannot run on a free Colab
-T4 or on a TPU** (TPUs can't execute NVFP4; a full-precision 26 B won't fit a single TPU chip
-either). So this notebook runs a **T4-fittable** model. For stronger small agent models, see
-`docs/t4_fallback_llms.md` (e.g. Qwen3.5-9B 4-bit).
+**Containment.** Everything is loopback: llama.cpp on `127.0.0.1:{LLM_PORT}`, OpenClaw gateway on
+`127.0.0.1:{GW_PORT}`. Nothing is exposed off the VM; the Colab runtime is the sandbox.
 
-**What's proven:** the full path — vLLM serve → OpenClaw gateway → inference — is validated
-green on a Colab T4. Two non-obvious OpenClaw fixes are baked into cell 4 (without them the
-gateway returns an empty `incomplete_result`): force **string content**, and keep the model's
-**`maxTokens` below `--max-model-len`** so the request doesn't overflow the context window.
+**Phase map (this notebook ⟷ the master bash harness):**
 
-**About keeping the VM alive:** free Colab reclaims idle runtimes, and the `colab` CLI's
-keep-alive had a bug (403 on a project-scoped API → quit in ~72 s; fixed in google-colab-cli
-≥ 0.5.12). Running this as a **notebook with the tab open is the robust path** — your browser
-frontend is the heartbeat, so the VM lives for hours of active use. Just don't close the tab.
-
-**Cost/limits:** it's an ephemeral T4 — nothing persists after the runtime ends, and heavy
-same-day use can shorten how long Colab lets a VM run. Treat each session as disposable.
+| Notebook cell | Master bash step |
+|---|---|
+| 1 install | `llama_boot.py` (wheel + OpenClaw) |
+| 2 serve + wait | `llama_boot.py` worker serve + `llama_poll.py` |
+| 3 onboard + gateway | `llama_finish.py` onboard/config/gateway |
+| 4 chat (smoke test) | `llama_finish.py` infer |
+| 5 autonomous task | (the roadmap: long headless job) |
 
 ---""")
 
-md("### 1 — Install vLLM (CUDA-13 fix) + OpenClaw  *(~4 min)*")
-code("""# vLLM 0.23 needs CUDA 13; Colab ships torch+cu128 -> remove it, reinstall via uv (+cu130).
-# vLLM runs as a subprocess later, so no kernel restart is needed here.
-import subprocess, sys
-print("Installing uv + vLLM (cu13) ...", flush=True)
-subprocess.run([sys.executable, "-m", "pip", "-q", "install", "-U", "uv"], check=True)
-subprocess.run([sys.executable, "-m", "pip", "-q", "uninstall", "-y",
-                "torch", "torchvision", "torchaudio"])
-subprocess.run("uv pip install --system --torch-backend auto vllm", shell=True, check=True)
+md("### 1 — Install llama.cpp server (prebuilt CUDA wheel) + OpenClaw  *(mirrors `llama_boot.py`)*")
+code(f"""import subprocess, sys
+print("Installing {WHEEL} (prebuilt CUDA wheel, no compile) ...", flush=True)
+subprocess.run([sys.executable, "-m", "pip", "-q", "install", "{WHEEL}",
+                "--extra-index-url", "{WHEEL_INDEX}", "--prefer-binary"], check=True)
+subprocess.run([sys.executable, "-m", "pip", "-q", "install", "-U", "huggingface_hub"], check=True)
 print("Installing OpenClaw (npm-based installer) ...", flush=True)
 subprocess.run("curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard",
                shell=True, check=True)
 print("\\nInstall complete.")""")
 
-md("""### 2 — Pick the model + a gateway token
+md(f"### 2 — Download {MODEL_ID} GGUF + serve llama.cpp on :{LLM_PORT} + wait  *(mirrors `llama_boot.py` serve + `llama_poll.py`)*")
+code(f"""import subprocess, sys, os, time, urllib.request
+from huggingface_hub import hf_hub_download
+print("Downloading GGUF (5.6 GB, one time) ...", flush=True)
+gguf = hf_hub_download("{MODEL_REPO}", "{MODEL_FILE}", local_dir="/content/gguf")
+print("GGUF at", gguf, flush=True)
 
-`Qwen/Qwen2.5-3B-Instruct` is a solid, real chat model that fits T4's 15 GB. Swap `MODEL` for
-something lighter (`Qwen/Qwen2.5-0.5B-Instruct`, fastest) or a stronger agent model from
-`docs/t4_fallback_llms.md` (e.g. a Qwen3.5-9B 4-bit build) — just confirm the HF repo id exists.""")
-code("""import os, secrets
-MODEL = "Qwen/Qwen2.5-3B-Instruct"     # <- change me if you like
-os.environ["VLLM_API_KEY"] = "vllm-local"
-os.environ["OPENCLAW_GATEWAY_TOKEN"] = secrets.token_hex(8)
-open("/content/oc_token.txt", "w").write(os.environ["OPENCLAW_GATEWAY_TOKEN"])  # chat cells read this
-print("MODEL =", MODEL)
-print("gateway token saved to /content/oc_token.txt")""")
+# OpenAI-compatible server on loopback :{LLM_PORT} (NOT :8080 — Colab's node service owns 8080).
+# n_gpu_layers 99 -> full offload to the T4.
+subprocess.Popen([sys.executable, "-m", "llama_cpp.server",
+    "--model", gguf, "--model_alias", "{MODEL_ID}",
+    "--n_gpu_layers", "99", "--n_ctx", "4096",
+    "--host", "127.0.0.1", "--port", "{LLM_PORT}"],
+    stdout=open("/content/llama.log", "w"), stderr=subprocess.STDOUT)
 
-md("### 3 — Start vLLM and wait for warmup  *(~7 min on T4, one time)*")
-code("""import subprocess, glob, os, time, urllib.request
-# LD_LIBRARY_PATH -> the nvidia pip libs (provides libcudart.so.13 for the cu13 build).
-nvlibs = ":".join(sorted(glob.glob("/usr/local/lib/python*/dist-packages/nvidia/*/lib")))
-env = dict(os.environ, LD_LIBRARY_PATH=nvlibs + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
-subprocess.Popen(["bash", "-c",
-    f"vllm serve {MODEL} --host 127.0.0.1 --port 8000 --max-model-len 8192 "
-    f"--enforce-eager > /content/vllm.log 2>&1"], env=env)
-
-print("vLLM starting (downloads weights + warms up; ~7 min on T4) ...", flush=True)
-req = urllib.request.Request("http://127.0.0.1:8000/v1/models",
-                             headers={"Authorization": "Bearer " + os.environ["VLLM_API_KEY"]})
+print("Loading model onto the T4 (~1 min) ...", flush=True)
 t0 = time.time(); ready = False
-while time.time() - t0 < 1200:
+while time.time() - t0 < 600:
     try:
-        urllib.request.urlopen(req, timeout=4); ready = True; break
+        urllib.request.urlopen("http://127.0.0.1:{LLM_PORT}/v1/models", timeout=4); ready = True; break
     except Exception:
-        print(f"   warming {int(time.time()-t0)}s ...", flush=True)
-        subprocess.run("tail -1 /content/vllm.log", shell=True)
-        time.sleep(12)
-print(("vLLM READY after %ds" % (time.time()-t0)) if ready else
-      "TIMEOUT — check /content/vllm.log (out-of-memory? try a smaller MODEL)")""")
+        print(f"   loading {{int(time.time()-t0)}}s ...", flush=True)
+        subprocess.run("tail -1 /content/llama.log", shell=True); time.sleep(8)
+print(("llama.cpp READY after %ds" % (time.time()-t0)) if ready else
+      "TIMEOUT — check /content/llama.log (OOM? try a smaller model)")""")
 
-md("### 4 — Configure OpenClaw against vLLM and start the gateway")
-code("""import subprocess, os
-PATHX = 'export PATH="$(npm prefix -g)/bin:$PATH"; '   # OpenClaw lives in the npm global bin
-def oc(c): return subprocess.run(["bash", "-c", PATHX + c], capture_output=True, text=True)
+md(f"### 3 — Onboard OpenClaw against :{LLM_PORT} + start gateway  *(mirrors `llama_finish.py`)*")
+code(f"""import subprocess, shutil, os, time
+# Resolve openclaw by ABSOLUTE path -> never 'openclaw: command not found' (npm symlinks it into
+# the global bin, e.g. /usr/bin). Provider id kept 'vllm' so it matches the bash harness + chat.
+OPENCLAW = shutil.which("openclaw") or "/usr/bin/openclaw"
+os.environ.setdefault("OPENCLAW_GATEWAY_TOKEN", "llama-local-token")
+def oc(args): return subprocess.run([OPENCLAW] + args, capture_output=True, text=True)
+print("openclaw:", OPENCLAW)
 
-ob = oc("openclaw onboard --non-interactive --accept-risk --mode local "
-        "--auth-choice custom-api-key --custom-provider-id vllm "
-        "--custom-base-url http://127.0.0.1:8000/v1 "
-        f"--custom-model-id {MODEL} --custom-compatibility openai "
-        '--custom-api-key \"$VLLM_API_KEY\" --custom-text-input '
-        "--gateway-port 18789 --gateway-bind loopback --gateway-auth token "
-        "--gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN "
-        "--skip-daemon --skip-skills --skip-channels --skip-health --skip-ui --json")
+ob = oc(["onboard", "--non-interactive", "--accept-risk", "--mode", "local",
+    "--auth-choice", "custom-api-key", "--custom-provider-id", "vllm",
+    "--custom-base-url", "http://127.0.0.1:{LLM_PORT}/v1",
+    "--custom-model-id", "{MODEL_ID}", "--custom-compatibility", "openai",
+    "--custom-api-key", "llama-local", "--custom-text-input",
+    "--gateway-port", "{GW_PORT}", "--gateway-bind", "loopback", "--gateway-auth", "token",
+    "--gateway-token-ref-env", "OPENCLAW_GATEWAY_TOKEN",
+    "--skip-daemon", "--skip-skills", "--skip-channels", "--skip-health", "--skip-ui", "--json"])
 print("onboard rc =", ob.returncode)
 
-# Two fixes so the gateway infer actually returns text on a local OpenAI-compat backend:
-#  - requiresStringContent: send plain-string content (not an array) -> avoids empty completion
-#  - maxTokens < --max-model-len -> avoids the context-overflow "incomplete_result"
+# Infer fixes (mirror the bash harness): string content; maxTokens < n_ctx -> avoid empty/overflow.
 for k, v in [("compat.requiresStringContent", "true"), ("compat.supportsTools", "false"),
-             ("maxTokens", "1024"), ("contextWindow", "8192")]:
-    oc(f"openclaw config set 'models.providers.vllm.models[0].{k}' {v}")
+             ("maxTokens", "1024"), ("contextWindow", "4096")]:
+    oc(["config", "set", f"models.providers.vllm.models[0].{{k}}", v])
 
-subprocess.Popen(["bash", "-c", PATHX + "openclaw gateway run > /content/gateway.log 2>&1"])
-import time; time.sleep(12)
-print("gateway status:")
-print(oc("openclaw gateway status").stdout[-300:] or "(started)")""")
+# Gateway runs in-process (lives while the tab is open) — needed only for the inline dashboard.
+subprocess.Popen([OPENCLAW, "gateway", "run"],
+    stdout=open("/content/gateway.log", "w"), stderr=subprocess.STDOUT)
+time.sleep(12)
+print("gateway started on 127.0.0.1:{GW_PORT}")""")
 
-md("""### 5 — 💬 Chat
+md(f"""### 4 — 💬 Chat (smoke test)  *(mirrors `llama_finish.py` infer)*
 
-Edit `MESSAGE` and run this cell. **Re-run it (with a new `MESSAGE`) for each turn.** This cell
-is self-contained — it reads the token from disk and calls the model in one shot, so it never
-depends on another cell having defined a function.""")
-code("""MESSAGE = "Hello! Tell me a fun fact in one short sentence."
+Self-contained: resolves `openclaw` by absolute path and uses **direct** infer (no gateway
+needed). Edit `MESSAGE`, re-run per turn. {MODEL_ID} is a reasoning model — a plain message takes
+~1–2 min and shows a `<think>` trace; prefix `/no_think` for a fast, clean answer.""")
+code(f'''MESSAGE  = "Hello! Who are you, in one sentence?"   # <- edit me; re-run for each turn
+MODEL_ID = "{MODEL_ID}"
 
-import subprocess, json
-_tok = open("/content/oc_token.txt").read().strip()
-_cmd = ('export PATH="$(npm prefix -g)/bin:$PATH"; '
-        f'export OPENCLAW_GATEWAY_TOKEN={_tok}; '
-        f'openclaw infer model run --gateway --model vllm/{MODEL} --prompt {MESSAGE!r} --json')
-_r = subprocess.run(["bash", "-c", _cmd], capture_output=True, text=True)
+import subprocess, json, shutil
+OPENCLAW = shutil.which("openclaw") or "/usr/bin/openclaw"
+r = subprocess.run([OPENCLAW, "infer", "model", "run", "--model", f"vllm/{{MODEL_ID}}",
+                    "--prompt", MESSAGE, "--json"], capture_output=True, text=True)
 try:
-    print(json.loads(_r.stdout)["outputs"][0]["text"])
+    print(json.loads(r.stdout)["outputs"][0]["text"])
 except Exception:
-    print(_r.stdout or _r.stderr)""")
+    print(r.stdout or r.stderr)''')
 
-md("""### 6 — (Optional) Open the OpenClaw browser Control UI inside Colab
+md(f"""### 5 — 🤖 Autonomous task (the roadmap) — run a long job headlessly, no human
 
-Surfaces OpenClaw's web UI through Colab's own port proxy (no tunnel). When it asks for a
-token, paste the value printed below.""")
-code("""from google.colab import output
+Scaffold for the real goal: kick off a **time-consuming, multi-step** OpenClaw job (e.g. deep
+research) **detached**, so it keeps running on the VM while you do other things, and write the
+result to `/content`. This is the in-notebook mirror of what the bash harness will run
+autonomously. Extend it with OpenClaw skills/tools (web access, multi-step planning) by
+re-onboarding **without** `--skip-skills` for true deep research.""")
+code(f'''import subprocess, shutil, textwrap
+OPENCLAW = shutil.which("openclaw") or "/usr/bin/openclaw"
+
+TASK = "Research and summarize: the tradeoffs of self-hosting an LLM on a single GPU vs. paid APIs. Give 5 concrete bullet points."
+
+# Detached so a long job survives across cells/idle. Output -> /content/research_result.txt.
+worker = textwrap.dedent(f"""
+    import subprocess, json
+    r = subprocess.run(["{{OPENCLAW}}", "infer", "model", "run", "--model", "vllm/{MODEL_ID}",
+                        "--prompt", {{TASK!r}}, "--json"], capture_output=True, text=True)
+    try:    out = json.loads(r.stdout)["outputs"][0]["text"]
+    except Exception: out = r.stdout or r.stderr
+    open("/content/research_result.txt", "w").write(out)
+""")
+open("/content/_task.py", "w").write(worker)
+subprocess.Popen(["bash", "-c", "nohup python3 /content/_task.py >/content/task.log 2>&1 &"])
+print("Autonomous task started (detached). Check /content/research_result.txt when it finishes.")
+print("Tip: re-run this cell after a minute, or:  !cat /content/research_result.txt")''')
+
+md(f"""### 6 — (Optional) OpenClaw Control dashboard, inline — no tunnel
+
+This works **only because your browser owns this runtime** (it's the Colab frontend), so
+`serve_kernel_port_as_iframe` can mint a Google-authenticated proxy to the gateway's port
+{GW_PORT} — no public tunnel. (This is exactly why the dashboard is NOT reachable when a headless
+CLI manages the VM.) Requires the gateway from cell 3 to be running.""")
+code(f'''from google.colab import output
 import os
-print("Paste this token into the OpenClaw UI:", open("/content/oc_token.txt").read().strip())
-output.serve_kernel_port_as_window(18789, path="/")
-# Inline instead of a new window? use:
-# output.serve_kernel_port_as_iframe(18789, path="/", height="720")""")
+print("If the dashboard asks for a token, paste:", os.environ.get("OPENCLAW_GATEWAY_TOKEN", "llama-local-token"))
+output.serve_kernel_port_as_iframe({GW_PORT}, path="/", height="720")''')
 
 nb = {
     "cells": cells,

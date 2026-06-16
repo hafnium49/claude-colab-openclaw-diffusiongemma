@@ -18,6 +18,8 @@ required = [
     'configs/diffusiongemma_nvfp4.json',
     'configs/smoke_test_tiny.json',
     'examples/prompt_task.json',
+    'notebooks/_gen_notebook.py',
+    'notebooks/openclaw_chat_colab.ipynb',
 ]
 
 for rel in required:
@@ -25,11 +27,13 @@ for rel in required:
     if not path.exists():
         raise SystemExit(f'Missing required file: {rel}')
 
-for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json', 'examples/prompt_task.json']:
+for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json', 'examples/prompt_task.json',
+            'notebooks/openclaw_chat_colab.ipynb']:
     with (ROOT / rel).open('r', encoding='utf-8') as f:
         json.load(f)
 
-for rel in ['remote/remote_colab_openclaw_diffusiongemma.py', 'remote/colab_exec_stub.py']:
+for rel in ['remote/remote_colab_openclaw_diffusiongemma.py', 'remote/colab_exec_stub.py',
+            'notebooks/_gen_notebook.py']:
     py_compile.compile(str(ROOT / rel), doraise=True)
 
 subprocess.run(['bash', '-n', str(ROOT / 'bin/colab_openclaw_diffusiongemma.sh')], check=True)
