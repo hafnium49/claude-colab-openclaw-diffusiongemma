@@ -1,13 +1,13 @@
 {
-  "_comment": "PATH A: OpenClaw + FREE google.colab.ai (Gemini) via an OpenAI-compatible shim. No GPU, no model download, no API fee. *** BROWSER/NOTEBOOK ONLY *** google.colab.ai needs the Colab UI to fetch MODEL_PROXY_API_KEY (routes via mp.kaggle.net) — a headless `colab exec` raises TimeoutException('Secrets can only be fetched when running from the Colab UI'). So this backend CANNOT be driven by the bash master (CLI); run it from a browser-run notebook on a CPU runtime instead. TRADE-OFF: inference runs on Google's backend, so prompts leave the sandbox (fee-free but NOT contained). Models from ai.list_models(): google/gemini-2.5-flash | gemini-2.5-pro | gemini-2.0-flash, google/gemma-3-{1b,4b,12b,27b} (no gemini-3.5 exists).",
-  "model": { "id": "gemini-2.5-flash" },
+  "_comment": "PATH A: OpenClaw + FREE google.colab.ai (Gemini) via an OpenAI-compatible shim. No GPU, no model download, no API fee. *** BROWSER/NOTEBOOK ONLY *** google.colab.ai needs the Colab UI to fetch MODEL_PROXY_API_KEY (routes via mp.kaggle.net) — a headless `colab exec` raises TimeoutException('Secrets can only be fetched when running from the Colab UI'). So this backend CANNOT be driven by the bash master (CLI); run it from notebooks/openclaw_colab_ai.ipynb (browser, CPU runtime) instead — that notebook is the real Path A entry point, this config exists for parity. TRADE-OFF: inference runs on Google's backend, so prompts leave the sandbox (fee-free but NOT contained). Default below is google/gemini-3.5-flash (per request); if ai.list_models() does not offer it, fall back to google/gemini-2.5-flash. Catalog also: gemini-2.5-pro | gemini-2.0-flash, google/gemma-3-{1b,4b,12b,27b}.",
+  "model": { "id": "gemini-3.5-flash" },
   "serve": {
     "backend": "colab_ai",
     "host": "127.0.0.1",
     "port": 8000,
     "startup_timeout_seconds": 120,
     "colab_ai": {
-      "model": "google/gemini-2.5-flash",
+      "model": "google/gemini-3.5-flash",
       "install_timeout_seconds": 600
     }
   },

@@ -11,8 +11,9 @@ Everything runs on loopback inside the Colab VM (the sandbox); the local machine
 |---|---|---|
 | **Headless / autonomous** | the bash master `bin/colab_openclaw_diffusiongemma.sh` (drives Colab via the `colab` CLI) | unattended runs, autonomous deep-research jobs, CI |
 | **Manual / browser** | the **Colab notebook** `notebooks/openclaw_chat_colab.ipynb` (Run-all in your browser) | interactive testing, chatting, the inline OpenClaw dashboard |
+| **Path A / free, no GPU** | the **Colab notebook** `notebooks/openclaw_colab_ai.ipynb` (browser, **CPU** runtime) | a fee-free chat with **no GPU and no API key**, when leaving the sandbox is acceptable |
 
-The notebook is the in-browser **counterpart** of the bash master — same phases, same model, same loopback containment. **The bash master is the source of truth; the notebook mirrors it.**
+The first two paths self-host the LLM **inside** the VM (fee-free *and* loopback-contained). **The bash master is the source of truth; the notebooks mirror it.** Path A is different: it wraps Colab's free `google.colab.ai` (Gemini), so it needs no GPU but runs inference on **Google's** backend — **not contained** (prompts leave the VM) and **browser-only** (the headless CLI can't fetch its proxy key).
 
 ---
 
@@ -50,6 +51,21 @@ This is the no-CLI path: open the notebook, Run all, chat. The open tab is the r
 **6. Autonomous research:** edit `TOPIC` / `STEPS` in cell 5 and run — it answers each step with the self-hosted model (no API fee) and writes `research_result.md`. This is the in-cell equivalent of `bin/colab_openclaw_diffusiongemma.sh --task examples/research_task.json`.
 
 > The notebook GUI/dashboard works only because *your* browser owns the runtime. A CLI-managed VM (the headless mode below) can't surface a browser dashboard — use the chat cell or the CLI there.
+
+---
+
+## Path A — free, no GPU (`google.colab.ai`)
+
+For a **fee-free** chat with **no GPU, no model download, and no API key**, open
+`notebooks/openclaw_colab_ai.ipynb` on a **CPU** runtime and Run all. It wraps Colab's free
+`google.colab.ai` (Gemini) behind an OpenAI-compatible shim so OpenClaw can use it like any backend.
+
+➡️ **https://colab.research.google.com/github/hafnium49/claude-colab-openclaw-diffusiongemma/blob/main/notebooks/openclaw_colab_ai.ipynb** (private-repo `404` caveat as above).
+
+Two things to know — both intrinsic to `google.colab.ai`:
+
+- **Not contained.** Inference runs on Google's servers, so your prompts **leave the VM**. The self-hosted paths above keep the model on the VM. Use Path A only when that's acceptable.
+- **Browser-only.** `google.colab.ai` can only fetch its proxy key from the Colab **UI**, so this can't be driven by the `colab` CLI. The notebook serves the shim **in-kernel** (a background thread) and **primes the key in cell 1** so the shim can reuse it. The default model is `google/gemini-3.5-flash`; cell 1 prints the live `ai.list_models()` catalog and tells you to fall back to `google/gemini-2.5-flash` if it isn't offered yet.
 
 ---
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import json
 import py_compile
 import subprocess
@@ -24,6 +25,8 @@ required = [
     'examples/research_task.json',
     'notebooks/_gen_notebook.py',
     'notebooks/openclaw_chat_colab.ipynb',
+    'notebooks/_gen_colab_ai_notebook.py',
+    'notebooks/openclaw_colab_ai.ipynb',
 ]
 
 for rel in required:
@@ -34,13 +37,27 @@ for rel in required:
 for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json',
             'configs/llama_qwen9b.json', 'configs/llama_smoke.json', 'configs/colab_ai_gemini.json',
             'examples/prompt_task.json', 'examples/research_task.json',
-            'notebooks/openclaw_chat_colab.ipynb']:
+            'notebooks/openclaw_chat_colab.ipynb', 'notebooks/openclaw_colab_ai.ipynb']:
     with (ROOT / rel).open('r', encoding='utf-8') as f:
         json.load(f)
 
 for rel in ['remote/remote_colab_openclaw_diffusiongemma.py', 'remote/colab_exec_stub.py',
-            'notebooks/_gen_notebook.py']:
+            'notebooks/_gen_notebook.py', 'notebooks/_gen_colab_ai_notebook.py']:
     py_compile.compile(str(ROOT / rel), doraise=True)
+
+# Every notebook code cell must be valid Python — the real failure mode for templated .ipynb
+# (a broken f-string/escape) that plain JSON-parsing above would not catch.
+for rel in ['notebooks/openclaw_chat_colab.ipynb', 'notebooks/openclaw_colab_ai.ipynb']:
+    nb = json.loads((ROOT / rel).read_text(encoding='utf-8'))
+    for i, cell in enumerate(nb['cells']):
+        if cell.get('cell_type') != 'code':
+            continue
+        src = cell['source']
+        src = ''.join(src) if isinstance(src, list) else src
+        try:
+            ast.parse(src)
+        except SyntaxError as exc:
+            raise SystemExit(f'{rel} code cell {i} is not valid Python: {exc}')
 
 subprocess.run(['bash', '-n', str(ROOT / 'bin/colab_openclaw_diffusiongemma.sh')], check=True)
 print('self_test_ok')
