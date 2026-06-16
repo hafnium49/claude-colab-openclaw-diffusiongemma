@@ -2,17 +2,20 @@
 """Generate notebooks/openclaw_chat_colab.ipynb — the NOTEBOOK COUNTERPART of the master bash
 harness.
 
-  MASTER (source of truth):  runs/dev/relaunch.sh  ->  llama_boot.py / llama_poll.py /
-                             llama_finish.py   (drives a Colab VM from outside, headless,
-                             via the colab CLI — this is what gets deployed autonomously).
+  MASTER (source of truth):  bin/colab_openclaw_diffusiongemma.sh  ->  drives
+                             remote/remote_colab_openclaw_diffusiongemma.py on a Colab VM from
+                             OUTSIDE, headless, via the colab CLI. Config-driven serve backend;
+                             detached bootstrap / prompt / task phases polled via *_status. This
+                             is what deploys autonomously.
 
-  THIS NOTEBOOK (counterpart): the SAME phases, but as in-Colab cells you Run-all. Useful for
-                             interactive testing and for surfacing the OpenClaw dashboard
-                             inline (only possible when *your* browser owns the runtime).
+  THIS NOTEBOOK (counterpart): the SAME phases (bootstrap -> serve + onboard; prompt; multi-step
+                             task), but as in-Colab cells you Run-all. Useful for interactive
+                             testing and for surfacing the OpenClaw dashboard inline (only
+                             possible when *your* browser owns the runtime).
 
-KEEP THEM IN SYNC. If you change the model, ports, wheel, or OpenClaw flags, change the bash
-harness FIRST (it is master) and mirror here. Authoring .ipynb JSON by hand is error-prone, so
-this builds it with json.dump (always valid).
+KEEP THEM IN SYNC. If you change the model, ports, wheel, OpenClaw flags, or the task logic,
+change the bash master FIRST (it is the source of truth) and mirror here. Authoring .ipynb JSON
+by hand is error-prone, so this builds it with json.dump (always valid).
 
 Roadmap context: the end goal is OpenClaw in a Colab sandbox with NO LLM API fee (the LLM is
 self-hosted via llama.cpp + a local GGUF — never a paid API) running long, autonomous workloads
@@ -36,10 +39,11 @@ def code(s): cells.append({"cell_type": "code", "metadata": {}, "execution_count
 
 md(f"""# OpenClaw + self-hosted {MODEL_ID} on Colab — notebook counterpart of the master bash harness
 
-**The bash harness is master.** This notebook mirrors, as Run-all cells, what
-`runs/dev/relaunch.sh` does headlessly from outside via the `colab` CLI
-(`llama_boot.py` → `llama_poll.py` → `llama_finish.py`). Use the bash harness for the real,
-autonomous deployment; use this notebook for interactive testing and for the inline dashboard.
+**The bash master is the source of truth.** This notebook mirrors, as Run-all cells, what
+`bin/colab_openclaw_diffusiongemma.sh` does headlessly from outside (driving
+`remote/remote_colab_openclaw_diffusiongemma.py` via the `colab` CLI): the detached
+`bootstrap` → `prompt`/`task` phases. Use the bash master for the real autonomous deployment;
+use this notebook for interactive testing and for the inline dashboard.
 
 **Setup:** `Runtime → Change runtime type → T4 GPU` → Save, then `Runtime → Run all`. Keep the
 tab open (your browser is the runtime heartbeat). First run installs everything + downloads the
@@ -60,19 +64,21 @@ vLLM there. llama.cpp has no paged-KV kernel and serves it (~35 tok/s, 4-bit). T
 **Containment.** Everything is loopback: llama.cpp on `127.0.0.1:{LLM_PORT}`, OpenClaw gateway on
 `127.0.0.1:{GW_PORT}`. Nothing is exposed off the VM; the Colab runtime is the sandbox.
 
-**Phase map (this notebook ⟷ the master bash harness):**
+**Phase map (this notebook ⟷ the `bin/` master).** `bin/colab_openclaw_diffusiongemma.sh` drives
+`remote/remote_colab_openclaw_diffusiongemma.py` on a Colab VM via the `colab` CLI; this notebook
+runs the same phases *in-cell* on your own runtime.
 
-| Notebook cell | Master bash step |
+| Notebook cell | Master phase (remote action) |
 |---|---|
-| 1 install | `llama_boot.py` (wheel + OpenClaw) |
-| 2 serve + wait | `llama_boot.py` worker serve + `llama_poll.py` |
-| 3 onboard + gateway | `llama_finish.py` onboard/config/gateway |
-| 4 chat (smoke test) | `llama_finish.py` infer |
-| 5 autonomous task | (the roadmap: long headless job) |
+| 1 install + 2 serve | `bootstrap` → `install_llama_cpp` + `start_llama_cpp` (serve :8000) |
+| 3 onboard + gateway | `bootstrap` → `configure_openclaw` (compat fixes) + `start_openclaw_gateway` |
+| 4 chat (smoke) | `prompt` → `_prompt_run` infer |
+| 5 autonomous task | `task` → `_task_run` (multi-step `steps[]` → `research_result.md`) |
+| 6 dashboard | notebook-only (works because your browser owns the runtime) |
 
 ---""")
 
-md("### 1 — Install llama.cpp server (prebuilt CUDA wheel) + OpenClaw  *(mirrors `llama_boot.py`)*")
+md("### 1 — Install llama.cpp server (prebuilt CUDA wheel) + OpenClaw  *(master: `bootstrap` → install)*")
 code(f"""import subprocess, sys
 print("Installing {WHEEL} (prebuilt CUDA wheel, no compile) ...", flush=True)
 subprocess.run([sys.executable, "-m", "pip", "-q", "install", "{WHEEL}",
@@ -83,7 +89,7 @@ subprocess.run("curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onbo
                shell=True, check=True)
 print("\\nInstall complete.")""")
 
-md(f"### 2 — Download {MODEL_ID} GGUF + serve llama.cpp on :{LLM_PORT} + wait  *(mirrors `llama_boot.py` serve + `llama_poll.py`)*")
+md(f"### 2 — Download {MODEL_ID} GGUF + serve llama.cpp on :{LLM_PORT} + wait  *(master: `bootstrap` → `start_llama_cpp`)*")
 code(f"""import subprocess, sys, os, time, urllib.request
 from huggingface_hub import hf_hub_download
 print("Downloading GGUF (5.6 GB, one time) ...", flush=True)
@@ -109,7 +115,7 @@ while time.time() - t0 < 600:
 print(("llama.cpp READY after %ds" % (time.time()-t0)) if ready else
       "TIMEOUT — check /content/llama.log (OOM? try a smaller model)")""")
 
-md(f"### 3 — Onboard OpenClaw against :{LLM_PORT} + start gateway  *(mirrors `llama_finish.py`)*")
+md(f"### 3 — Onboard OpenClaw against :{LLM_PORT} + start gateway  *(master: `bootstrap` → `configure_openclaw` + gateway)*")
 code(f"""import subprocess, shutil, os, time
 # Resolve openclaw by ABSOLUTE path -> never 'openclaw: command not found' (npm symlinks it into
 # the global bin, e.g. /usr/bin). Provider id kept 'vllm' so it matches the bash harness + chat.
@@ -139,7 +145,7 @@ subprocess.Popen([OPENCLAW, "gateway", "run"],
 time.sleep(12)
 print("gateway started on 127.0.0.1:{GW_PORT}")""")
 
-md(f"""### 4 — 💬 Chat (smoke test)  *(mirrors `llama_finish.py` infer)*
+md(f"""### 4 — 💬 Chat (smoke test)  *(master: `prompt` → `_prompt_run`)*
 
 Self-contained: resolves `openclaw` by absolute path and uses **direct** infer (no gateway
 needed). Edit `MESSAGE`, re-run per turn. {MODEL_ID} is a reasoning model — a plain message takes
@@ -156,31 +162,50 @@ try:
 except Exception:
     print(r.stdout or r.stderr)''')
 
-md(f"""### 5 — 🤖 Autonomous task (the roadmap) — run a long job headlessly, no human
+md("""### 5 — 🤖 Autonomous task  *(master: `task` → `_task_run`)* — multi-step deep research, no human
 
-Scaffold for the real goal: kick off a **time-consuming, multi-step** OpenClaw job (e.g. deep
-research) **detached**, so it keeps running on the VM while you do other things, and write the
-result to `/content`. This is the in-notebook mirror of what the bash harness will run
-autonomously. Extend it with OpenClaw skills/tools (web access, multi-step planning) by
-re-onboarding **without** `--skip-skills` for true deep research.""")
-code(f'''import subprocess, shutil, textwrap
-OPENCLAW = shutil.which("openclaw") or "/usr/bin/openclaw"
+Mirrors the master's `task` worker: runs a **list of `STEPS`** sequentially through OpenClaw (one
+self-hosted-LLM call each — no paid API) and accumulates the answers into
+`/content/research_result.md`, exactly like
+`bin/colab_openclaw_diffusiongemma.sh --task examples/research_task.json`. Edit `TOPIC` / `STEPS`.
 
-TASK = "Research and summarize: the tradeoffs of self-hosting an LLM on a single GPU vs. paid APIs. Give 5 concrete bullet points."
+The master runs this **detached** (to survive the colab-exec window); here it runs **in-cell**
+because your open tab owns the runtime. The `infer()` salvage rule matches the master's
+`extract_infer_text` (only a non-empty `outputs[0].text` counts). For true tool-using research,
+re-onboard in cell 3 **without** `--skip-skills`.""")
+code('''import subprocess, json, shutil
+OPENCLAW  = shutil.which("openclaw") or "/usr/bin/openclaw"
+MODEL_ID  = "Qwen3.5-9B"
+TRANSPORT = "local"   # direct infer (no --gateway) — the robust path the master uses for research
 
-# Detached so a long job survives across cells/idle. Output -> /content/research_result.txt.
-worker = textwrap.dedent(f"""
-    import subprocess, json
-    r = subprocess.run(["{{OPENCLAW}}", "infer", "model", "run", "--model", "vllm/{MODEL_ID}",
-                        "--prompt", {{TASK!r}}, "--json"], capture_output=True, text=True)
-    try:    out = json.loads(r.stdout)["outputs"][0]["text"]
-    except Exception: out = r.stdout or r.stderr
-    open("/content/research_result.txt", "w").write(out)
-""")
-open("/content/_task.py", "w").write(worker)
-subprocess.Popen(["bash", "-c", "nohup python3 /content/_task.py >/content/task.log 2>&1 &"])
-print("Autonomous task started (detached). Check /content/research_result.txt when it finishes.")
-print("Tip: re-run this cell after a minute, or:  !cat /content/research_result.txt")''')
+TOPIC = "Tradeoffs of self-hosting an LLM on a single GPU vs. paid inference APIs."
+STEPS = [
+    "List the main dimensions to compare self-hosted single-GPU LLM inference against paid APIs (cost, latency, throughput, privacy, control, ops burden, capability ceiling). One line each.",
+    "For a single 16GB GPU (e.g. a T4) running a 4-bit ~9B model, give concrete tokens/sec, context limits, and what breaks at higher load.",
+    "When does a paid API clearly win, and when does self-hosting clearly win? Give 3 scenarios each.",
+    "Synthesize the above into a 5-bullet executive summary with a final recommendation heuristic.",
+]
+
+def infer(prompt):
+    flag = ["--gateway"] if TRANSPORT == "gateway" else []   # else: direct infer, the robust path
+    r = subprocess.run([OPENCLAW, "infer", "model", "run", *flag, "--model", f"vllm/{MODEL_ID}",
+                        "--prompt", prompt, "--json"], capture_output=True, text=True)
+    try:    # same salvage rule as the master's extract_infer_text: only non-empty text counts
+        outs = (json.loads(r.stdout) or {}).get("outputs") or []
+        if outs and isinstance(outs[0], dict) and isinstance(outs[0].get("text"), str) and outs[0]["text"].strip():
+            return outs[0]["text"]
+    except Exception:
+        pass
+    return None
+
+lines = [f"# Autonomous research result\\n\\n- Topic: {TOPIC}\\n- Model: vllm/{MODEL_ID}\\n"]
+for i, step in enumerate(STEPS, 1):
+    print(f"step {i}/{len(STEPS)}: {step[:60]}...", flush=True)
+    text = infer(step)
+    lines.append(f"\\n## Step {i}\\n\\n**Prompt:** {step}\\n\\n{text or '(no text returned)'}\\n")
+open("/content/research_result.md", "w").write("\\n".join(lines))
+print("\\nWrote /content/research_result.md (" + str(len(STEPS)) + " steps)\\n" + "=" * 60)
+print(open("/content/research_result.md").read())''')
 
 md(f"""### 6 — (Optional) OpenClaw Control dashboard, inline — no tunnel
 
