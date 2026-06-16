@@ -294,9 +294,81 @@ def start_llama_cpp(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, A
     return {'ok': ok, 'base_url': f'http://{host}:{port}/v1', 'model_id': model_id, 'backend': 'llama_cpp'}
 
 
+# OpenAI-compatible shim over google.colab.ai (free in-Colab Gemini/Gemma — NO GPU, NO download,
+# NO API fee). Runs INSIDE the Colab VM (where `from google.colab import ai` exists) and lets
+# OpenClaw point at it on loopback exactly like a real model server. NOTE: inference runs on
+# Google's backend, so prompts leave the sandbox — this is the fee-free-but-not-contained path.
+COLAB_AI_SHIM = r'''
+import os, json, time
+from fastapi import FastAPI, Request
+import uvicorn
+from google.colab import ai
+
+MODEL = os.environ.get("COLAB_AI_MODEL", "google/gemini-2.5-flash")
+app = FastAPI()
+
+@app.get("/v1/models")
+def _models():
+    try:
+        ids = list(ai.list_models())
+    except Exception:
+        ids = [MODEL]
+    return {"object": "list", "data": [{"id": m, "object": "model", "owned_by": "google"} for m in ids]}
+
+def _content(m):
+    c = m.get("content", "")
+    return c if isinstance(c, str) else json.dumps(c)
+
+@app.post("/v1/chat/completions")
+async def _chat(req: Request):
+    body = await req.json()
+    msgs = body.get("messages", [])
+    prompt = "\n\n".join(f"{m.get('role','user')}: {_content(m)}" for m in msgs) or "Hello"
+    try:
+        text = ai.generate_text(prompt, model_name=MODEL)   # text-to-text; non-streaming
+    except Exception as e:
+        text = "[colab_ai error] " + repr(e)
+    return {"id": "chatcmpl-colabai", "object": "chat.completion", "created": int(time.time()),
+            "model": body.get("model") or MODEL,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "usage": {}}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host=os.environ.get("COLAB_AI_HOST", "127.0.0.1"),
+                port=int(os.environ.get("COLAB_AI_PORT", "8000")))
+'''
+
+
+def install_colab_ai(scfg: Dict[str, Any]) -> None:
+    if not scfg.get('install', True):
+        return
+    cai = scfg.get('colab_ai', {})
+    run(f"{sys.executable} -m pip install -q fastapi uvicorn", 'install.log',
+        check=True, timeout=int(cai.get('install_timeout_seconds', 600)))
+
+
+def start_colab_ai(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, Any]:
+    model_id = config['model']['id']
+    cai = scfg.get('colab_ai', {})
+    ai_model = cai.get('model', 'google/gemini-2.5-flash')
+    host, port = scfg['host'], scfg['port']
+    (BASE / 'colab_ai_shim.py').write_text(COLAB_AI_SHIM, encoding='utf-8')
+    env = {'COLAB_AI_MODEL': ai_model, 'COLAB_AI_HOST': host, 'COLAB_AI_PORT': str(port)}
+    cmd = (f"export COLAB_AI_MODEL={shlex.quote(ai_model)}; export COLAB_AI_HOST={shlex.quote(host)}; "
+           f"export COLAB_AI_PORT={port}; nohup {sys.executable} {BASE / 'colab_ai_shim.py'} "
+           f"> {RESULTS}/serve.log 2>&1 & echo $! > {RESULTS}/serve.pid")
+    run(cmd, 'serve_start.log', check=True, timeout=60, env=env)
+    ok = wait_for_url(f'http://{host}:{port}/v1/models', scfg['startup_timeout_seconds'], 'serve_start.log')
+    return {'ok': ok, 'base_url': f'http://{host}:{port}/v1', 'model_id': model_id,
+            'backend': 'colab_ai', 'ai_model': ai_model}
+
+
 def start_backend(config: Dict[str, Any]) -> Dict[str, Any]:
     scfg = serve_cfg(config)
     backend = scfg['backend']
+    if backend == 'colab_ai':
+        install_colab_ai(scfg)
+        return start_colab_ai(config, scfg)
     if backend == 'llama_cpp':
         install_llama_cpp(scfg)
         return start_llama_cpp(config, scfg)

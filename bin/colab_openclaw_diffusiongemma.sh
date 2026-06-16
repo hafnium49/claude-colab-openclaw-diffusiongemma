@@ -171,7 +171,10 @@ print(per*len(steps)+600)
 # Single-prompt poll budget: the infer timeout + margin.
 PROMPT_BUDGET=$(python -c "import json,sys; print(int(json.load(open(sys.argv[1])).get('timeout_seconds',900))+300)" "$TASK" 2>/dev/null || echo 1200)
 
-run colab new -s "$SESSION" --gpu "$GPU"
+case "${GPU,,}" in
+  cpu|none|"") run colab new -s "$SESSION" ;;            # colab_ai backend needs no GPU
+  *)           run colab new -s "$SESSION" --gpu "$GPU" ;;
+esac
 run colab status -s "$SESSION"
 run colab upload -s "$SESSION" "$REMOTE_SCRIPT" /content/remote_colab_openclaw_diffusiongemma.py
 run colab upload -s "$SESSION" "$CONFIG" /content/ocdg_config.json

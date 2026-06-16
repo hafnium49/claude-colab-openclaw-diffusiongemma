@@ -19,6 +19,7 @@ required = [
     'configs/smoke_test_tiny.json',
     'configs/llama_qwen9b.json',
     'configs/llama_smoke.json',
+    'configs/colab_ai_gemini.json',
     'examples/prompt_task.json',
     'examples/research_task.json',
     'notebooks/_gen_notebook.py',
@@ -31,7 +32,7 @@ for rel in required:
         raise SystemExit(f'Missing required file: {rel}')
 
 for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json',
-            'configs/llama_qwen9b.json', 'configs/llama_smoke.json',
+            'configs/llama_qwen9b.json', 'configs/llama_smoke.json', 'configs/colab_ai_gemini.json',
             'examples/prompt_task.json', 'examples/research_task.json',
             'notebooks/openclaw_chat_colab.ipynb']:
     with (ROOT / rel).open('r', encoding='utf-8') as f:
