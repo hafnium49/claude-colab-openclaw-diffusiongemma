@@ -1,65 +1,100 @@
-# Claude Code Colab OpenClaw + DiffusionGemma Appliance
+# Claude Code · Colab · OpenClaw + self-hosted LLM appliance
 
-This repository is a Claude Code-native project scaffold for controlling a single Google Colab GPU runtime through the Google Colab CLI. The Colab runtime hosts:
+Control a single Google Colab GPU runtime that hosts **OpenClaw** + a **self-hosted, OpenAI-compatible LLM** on loopback — no paid LLM API, no public tunnel. The serving backend is config-driven:
 
-- a vLLM OpenAI-compatible server for `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4`
-- an OpenClaw Gateway configured to use that local vLLM endpoint
-- a headless prompt runner that collects outputs and logs into one zip archive
+- **`llama_cpp` (default, validated, fee-free):** llama.cpp serves `Qwen3.5-9B` (4-bit GGUF) on a free Colab **T4**. This is the path that actually works on free Colab — vLLM can't serve ≥3B on a T4 (FlashInfer crashes on Turing/sm_75; see [`docs/t4_llama_cpp_serving.md`](docs/t4_llama_cpp_serving.md)).
+- **`vllm` (legacy):** vLLM serves `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4` — needs an **L4** entitlement.
 
-The local machine runs Claude Code and uses `colab` as the transport. There is no public OpenClaw tunnel requirement in the default workflow.
+Everything runs on loopback inside the Colab VM (the sandbox); the local machine is only the controller. There are **two ways to deploy**:
 
-## Scope
+| Mode | How | Use it for |
+|---|---|---|
+| **Headless / autonomous** | the bash master `bin/colab_openclaw_diffusiongemma.sh` (drives Colab via the `colab` CLI) | unattended runs, autonomous deep-research jobs, CI |
+| **Manual / browser** | the **Colab notebook** `notebooks/openclaw_chat_colab.ipynb` (Run-all in your browser) | interactive testing, chatting, the inline OpenClaw dashboard |
 
-This bundle is only for a Colab-hosted OpenClaw + DiffusionGemma language-model appliance. It intentionally does not include unrelated workloads.
+The notebook is the in-browser **counterpart** of the bash master — same phases, same model, same loopback containment. **The bash master is the source of truth; the notebook mirrors it.**
 
-## Quick start
+---
 
-Install Google Colab CLI locally, authenticate it, then run:
+## Deploy manually in the browser (Colab notebook)
+
+This is the no-CLI path: open the notebook, Run all, chat. The open tab is the runtime heartbeat (keeps the VM alive); nothing is installed on your machine.
+
+**1. Open the notebook in Colab:**
+
+➡️ **https://colab.research.google.com/github/hafnium49/claude-colab-openclaw-diffusiongemma/blob/main/notebooks/openclaw_chat_colab.ipynb**
+
+(Or, from the repo: `notebooks/openclaw_chat_colab.ipynb` → "Open in Colab".)
+
+> **Private repo?** That link only works if the repo is **public**, *or* if you open it via
+> Colab `File → Open notebook → GitHub`, sign in, and tick **"Include private repositories"**
+> (a one-time GitHub authorization). An unauthenticated open of a private repo returns `404`.
+
+**2. Select a GPU:** `Runtime → Change runtime type → T4 GPU → Save`.
+
+**3. Run all:** `Runtime → Run all` (or run the cells top to bottom). **Keep the tab open.** The first run installs the llama.cpp wheel + OpenClaw and downloads the 5.6 GB GGUF — **~6 min, one time**.
+
+**4. What each cell does** (mirrors the master's remote phases):
+
+| Cell | Action | Master equivalent |
+|---|---|---|
+| 1 — Install | prebuilt `llama-cpp-python[server]` CUDA wheel (no compile) + OpenClaw | `bootstrap` → install |
+| 2 — Serve | download the GGUF, serve llama.cpp on `127.0.0.1:8000`, wait until ready | `bootstrap` → `start_llama_cpp` |
+| 3 — Onboard | onboard OpenClaw against `:8000` + the compat infer-fixes, start the gateway | `bootstrap` → `configure_openclaw` |
+| 4 — 💬 Chat | one prompt via OpenClaw (edit `MESSAGE`, re-run per turn) | `prompt` → `_prompt_run` |
+| 5 — 🤖 Autonomous task | a **multi-step** deep-research loop (`STEPS` → `/content/research_result.md`) | `task` → `_task_run` |
+| 6 — Dashboard | the OpenClaw Control UI inline via Colab's port-proxy (no tunnel) | notebook-only |
+
+**5. Chat:** edit `MESSAGE` in cell 4 and re-run. `Qwen3.5-9B` is a reasoning model — a turn takes ~1–2 min and shows a `<think>` trace; prefix `/no_think` for a fast, clean answer.
+
+**6. Autonomous research:** edit `TOPIC` / `STEPS` in cell 5 and run — it answers each step with the self-hosted model (no API fee) and writes `research_result.md`. This is the in-cell equivalent of `bin/colab_openclaw_diffusiongemma.sh --task examples/research_task.json`.
+
+> The notebook GUI/dashboard works only because *your* browser owns the runtime. A CLI-managed VM (the headless mode below) can't surface a browser dashboard — use the chat cell or the CLI there.
+
+---
+
+## Deploy headless (the bash master)
+
+Install the Google Colab CLI locally (`pip install google-colab-cli`), authenticate it (ADC), then:
 
 ```bash
-unzip claude-colab-openclaw-diffusiongemma.zip
-cd claude-colab-openclaw-diffusiongemma
-bash bin/colab_openclaw_diffusiongemma.sh \
-  --session openclaw-dg \
-  --gpu L4 \
-  --config configs/diffusiongemma_nvfp4.json \
-  --task examples/prompt_task.json \
-  --out ./runs/openclaw-dg
+# Cheap orchestration smoke (0.5B GGUF on T4 via llama.cpp) — validates the path fast
+bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
+  --config configs/llama_smoke.json --task examples/prompt_task.json --out ./runs/smoke
+
+# Validated default: Qwen3.5-9B on a T4, single prompt (fee-free, self-hosted)
+bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
+  --config configs/llama_qwen9b.json --task examples/prompt_task.json --out ./runs/llama9b
+
+# Autonomous, human-free deep-research run (detached + polled multi-step task)
+bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
+  --config configs/llama_qwen9b.json --task examples/research_task.json --out ./runs/research
+
+# Original DiffusionGemma target (vLLM backend; needs an L4 entitlement)
+bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
+  --config configs/diffusiongemma_nvfp4.json --task examples/prompt_task.json --out ./runs/openclaw-dg
 ```
 
-For a lightweight architecture smoke test, use:
-
-```bash
-bash bin/colab_openclaw_diffusiongemma.sh \
-  --session openclaw-dg-smoke \
-  --gpu T4 \
-  --config configs/smoke_test_tiny.json \
-  --task examples/prompt_task.json \
-  --out ./runs/smoke
-```
-
-The output directory receives:
-
-- `openclaw_diffusiongemma_results.zip`
-- `colab_session_log.ipynb`
-- downloaded `manifest.json` when available
-- local command logs
+`--keep-session` leaves the VM up for inspection (default tears it down after download). The launcher runs `scripts/self_test.py` first, so a self-test failure aborts before any VM is provisioned. The `--out` directory receives `openclaw_diffusiongemma_results.zip`, `manifest.json`, `research_result.md` (research mode), `colab_session_log.ipynb`, and local command logs.
 
 ## Claude Code integration
 
-Copy or keep the included project-native files:
+The project ships a subagent and skill (`self_test.py` requires both):
 
 ```text
 .claude/agents/colab-openclaw-diffusiongemma.md
 .claude/skills/colab-openclaw-diffusiongemma/SKILL.md
 ```
 
-Then ask Claude Code to use the `colab-openclaw-diffusiongemma` subagent, or invoke the skill directly with:
+Ask Claude Code to use the `colab-openclaw-diffusiongemma` subagent, or invoke the skill directly:
 
 ```text
-/colab-openclaw-diffusiongemma run configs/diffusiongemma_nvfp4.json examples/prompt_task.json
+/colab-openclaw-diffusiongemma run configs/llama_qwen9b.json examples/prompt_task.json
 ```
 
-## Hardware note
+## Notes
 
-The default quantized DiffusionGemma config is intended for a high-memory Colab GPU. Use the smoke-test config first to validate Colab CLI, OpenClaw, and vLLM orchestration before spending time on the full checkpoint.
+- **Fee-free + loopback containment.** The LLM is self-hosted (no paid API); the model + gateway are loopback-only inside Colab. Don't add public tunnels unless you accept the exposure.
+- **Secrets via env only**, never in config files: `HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` (model download) and `OPENCLAW_GATEWAY_TOKEN`/`VLLM_API_KEY` are read from the Colab environment if present.
+- **Colab is ephemeral.** Treat every run as batch-style; nothing persists after the runtime ends. Free-tier T4 availability fluctuates (`colab new` can return `503` after heavy same-day use).
+- Validate locally before any run: `python scripts/self_test.py` and `bash -n bin/colab_openclaw_diffusiongemma.sh`.
