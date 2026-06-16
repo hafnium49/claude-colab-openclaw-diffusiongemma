@@ -1,0 +1,30 @@
+{
+  "_comment": "VALIDATED 2026-06-17 on a Colab T4 (ok:true, got_text:true, returned the exact smoke token, ~134 tok/s -> ~4x Qwen3.5-9B's ~35). Phase C (self-hosted, contained, fee-free) with LiquidAI LFM2.5-8B-A1B instead of Qwen3.5-9B. llama.cpp serves a 4-bit GGUF on a T4; OpenClaw points at it on loopback. LFM2.5-8B-A1B is an MoE (~8B total / ~1B active -> fast, small VRAM) using the 'lfm2moe' arch (in llama.cpp since the Oct-2025 LFM2-8B-A1B release; LFM2.5 reuses it). Pinned to the prebuilt cu124 wheel 0.3.30 (confirmed to know lfm2moe). Same OpenClaw onboarding + compat infer-fixes as llama_qwen9b.json. Swap gguf_file to LFM2.5-8B-A1B-Q5_K_M.gguf for higher quality (still tiny on a T4).",
+  "model": {
+    "id": "LFM2.5-8B-A1B",
+    "gguf_repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
+    "gguf_file": "LFM2.5-8B-A1B-Q4_K_M.gguf"
+  },
+  "serve": {
+    "backend": "llama_cpp",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 900,
+    "llama_cpp": {
+      "wheel": "llama-cpp-python[server]==0.3.30",
+      "wheel_index": "https://abetlen.github.io/llama-cpp-python/whl/cu124",
+      "server_args": ["--n_gpu_layers", "99", "--n_ctx", "4096"]
+    }
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": false,
+      "maxTokens": 1024,
+      "contextWindow": 4096
+    }
+  }
+}
