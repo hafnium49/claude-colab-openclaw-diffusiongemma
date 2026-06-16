@@ -7,15 +7,15 @@ then builds /content/openclaw_diffusiongemma_results.zip.
 
 Serving backend is CONFIG-DRIVEN (`serve.backend`):
   - "llama_cpp" (VALIDATED, fee-free): prebuilt llama-cpp-python[server] CUDA wheel serves a
-    local GGUF on loopback. This is the only backend that serves >=3B on a Colab T4 (vLLM's
-    FlashInfer crashes on Turing/sm_75). See docs/t4_llama_cpp_serving.md.
+    local GGUF on loopback. The only backend that serves >=3B on a Colab T4 (vLLM's FlashInfer
+    crashes on Turing/sm_75). See docs/t4_llama_cpp_serving.md.
   - "vllm": kept for the original DiffusionGemma/L4 target (old configs without a `serve` block
     fall back to this via their top-level `vllm` section).
 
-Phases are driven by /content/ocdg_control.json `{"action": ...}`, re-uploaded by the launcher
-before each exec (the kernel keeps no state between execs). Long work (install/serve, and the
-autonomous task) runs DETACHED and is polled via short *_status execs, so no single exec is held
-open through a multi-minute step.
+EVERY heavy phase (bootstrap, prompt, task) runs DETACHED via `--worker` and is polled through a
+short *_status exec, so no single `colab exec` is held open through a multi-minute step (which
+would hit the ~10.5-min websocket-drop). Phases are dispatched by /content/ocdg_control.json
+`{"action": ...}`, re-uploaded by the launcher before each exec.
 """
 from __future__ import annotations
 
@@ -38,15 +38,19 @@ CONFIG_PATH = BASE / 'ocdg_config.json'
 CONTROL_PATH = BASE / 'ocdg_control.json'
 TASK_PATH = BASE / 'ocdg_task.json'
 ZIP_PATH = BASE / 'openclaw_diffusiongemma_results.zip'
-STATUS_PATH = RESULTS / 'bootstrap_status.json'
-DONE_PATH = RESULTS / 'bootstrap.done'
-TASK_STATUS_PATH = RESULTS / 'task_status.json'
-TASK_DONE_PATH = RESULTS / 'task.done'
 SELF_PATH = BASE / 'remote_colab_openclaw_diffusiongemma.py'
 GGUF_DIR = BASE / 'gguf'
 
-# Resolve the openclaw binary by absolute path -> never 'openclaw: command not found' regardless
-# of PATH quirks. (The npm installer symlinks it into the global bin, e.g. /usr/bin/openclaw.)
+# (status_file, done_file) per detached phase.
+STATUS_PATH = RESULTS / 'bootstrap_status.json'
+DONE_PATH = RESULTS / 'bootstrap.done'
+PROMPT_STATUS_PATH = RESULTS / 'prompt_status.json'
+PROMPT_DONE_PATH = RESULTS / 'prompt.done'
+TASK_STATUS_PATH = RESULTS / 'task_status.json'
+TASK_DONE_PATH = RESULTS / 'task.done'
+
+# Resolve the openclaw binary by PATH -> never 'openclaw: command not found' regardless of PATH
+# quirks. (The npm installer symlinks it into the global bin, e.g. /usr/bin/openclaw.)
 PATH_PREFIX = 'export PATH="$(npm prefix -g)/bin:$PATH"; '
 
 
@@ -125,18 +129,49 @@ def wait_for_url(url: str, seconds: int, log_name: str) -> bool:
 
 
 def extract_infer_text(raw: str) -> Optional[str]:
-    """Salvage the model text from an `openclaw infer ... --json` log (it may echo logs first)."""
-    first, last = raw.find('{'), raw.rfind('}')
-    if first == -1 or last == -1 or last <= first:
+    """Salvage the model text from an `openclaw infer ... --json` log.
+
+    The log also contains the echoed command (which embeds the prompt, possibly with braces) and
+    other lines, so a naive first-{ to last-} slice is fragile. Use a real JSON parser
+    (raw_decode is brace/quote aware) to scan every `{...}` object and keep the LAST one that has
+    an `outputs` key — that is OpenClaw's result object.
+    """
+    dec = json.JSONDecoder()
+    best: Optional[Dict[str, Any]] = None
+    idx = raw.find('{')
+    while idx != -1:
+        try:
+            obj, end = dec.raw_decode(raw, idx)
+            if isinstance(obj, dict) and 'outputs' in obj:
+                best = obj
+            idx = raw.find('{', max(end, idx + 1))
+        except json.JSONDecodeError:
+            idx = raw.find('{', idx + 1)
+    # Only count it as text when outputs is a non-empty list whose first entry has non-blank text.
+    # An empty/incomplete completion (outputs:[] or outputs:[{}]) must read as "no text" so the
+    # got_text success signal stays honest (don't dump the raw object as if it were the answer).
+    if not isinstance(best, dict):
         return None
-    try:
-        parsed = json.loads(raw[first:last + 1])
-    except Exception:
-        return None
-    try:
-        return parsed['outputs'][0]['text']
-    except Exception:
-        return json.dumps(parsed)
+    outs = best.get('outputs')
+    if isinstance(outs, list) and outs and isinstance(outs[0], dict):
+        text = outs[0].get('text')
+        if isinstance(text, str) and text.strip():
+            return text
+    return None
+
+
+def oc_env(config: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve the OpenClaw gateway token + provider api key.
+
+    Each `colab exec` is a fresh process, so later (detached) phases must re-derive these from
+    the SAME source as configure_openclaw(): env first (a real Colab secret wins), then the
+    config's openclaw.{gateway_token,vllm_api_key}, then a loopback default.
+    """
+    ocfg = config.get('openclaw', {})
+    return {
+        'OPENCLAW_GATEWAY_TOKEN': os.environ.get('OPENCLAW_GATEWAY_TOKEN') or ocfg.get('gateway_token') or 'colab-openclaw-local-token',
+        'VLLM_API_KEY': os.environ.get('VLLM_API_KEY') or ocfg.get('vllm_api_key') or 'vllm-local',
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +191,6 @@ def serve_cfg(config: Dict[str, Any]) -> Dict[str, Any]:
             'install': s.get('install', s.get(backend, {}).get('install', True)),
             backend: s.get(backend, {}),
         }
-    # Legacy: old configs put everything under a top-level `vllm` block.
     v = config.get('vllm', {})
     return {
         'backend': 'vllm',
@@ -176,7 +210,7 @@ def collect_environment() -> None:
     (RESULTS / 'environment.txt').write_text('\n'.join(lines), encoding='utf-8')
 
 
-def install_vllm(config: Dict[str, Any], scfg: Dict[str, Any]) -> None:
+def install_vllm(scfg: Dict[str, Any]) -> None:
     vcfg = scfg.get('vllm', {})
     if not scfg.get('install', True):
         return
@@ -218,7 +252,7 @@ def start_vllm(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, Any]:
     return {'ok': ok, 'base_url': f'http://{host}:{port}/v1', 'model_id': model_id, 'backend': 'vllm'}
 
 
-def install_llama_cpp(config: Dict[str, Any], scfg: Dict[str, Any]) -> None:
+def install_llama_cpp(scfg: Dict[str, Any]) -> None:
     if not scfg.get('install', True):
         return
     lcfg = scfg.get('llama_cpp', {})
@@ -243,9 +277,11 @@ def start_llama_cpp(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, A
     max_wait = scfg['startup_timeout_seconds']
     server_args = [str(a) for a in lcfg.get('server_args', ['--n_gpu_layers', '99', '--n_ctx', '4096'])]
 
-    # Download the GGUF (public repos need no token; hf_hub reads HF_TOKEN from env if present).
-    dl = (f"{sys.executable} -c \"from huggingface_hub import hf_hub_download as d; "
-          f"print(d({repo!r}, {gguf_file!r}, local_dir={str(GGUF_DIR)!r}))\"")
+    # Download the GGUF. Build the python one-liner with %r for safe Python literals, then
+    # shlex.quote the WHOLE program so the shell sees one safe token (robust to quotes in names).
+    prog = ('from huggingface_hub import hf_hub_download as d; '
+            'print(d(%r, %r, local_dir=%r))' % (repo, gguf_file, str(GGUF_DIR)))
+    dl = f"{sys.executable} -c {shlex.quote(prog)}"
     run(dl, 'llama_download.log', check=True, timeout=int(lcfg.get('download_timeout_seconds', 1800)))
     gguf_path = str(GGUF_DIR / gguf_file)
 
@@ -262,16 +298,16 @@ def start_backend(config: Dict[str, Any]) -> Dict[str, Any]:
     scfg = serve_cfg(config)
     backend = scfg['backend']
     if backend == 'llama_cpp':
-        install_llama_cpp(config, scfg)
+        install_llama_cpp(scfg)
         return start_llama_cpp(config, scfg)
     if backend == 'vllm':
-        install_vllm(config, scfg)
+        install_vllm(scfg)
         return start_vllm(config, scfg)
     raise ValueError(f'Unknown serve backend: {backend}')
 
 
-def install_openclaw_bg() -> Any:
-    """Kick the OpenClaw npm installer off in the background; returns (proc, logfile) or (None, None)."""
+def install_openclaw_bg():
+    """Kick the OpenClaw npm installer off in the background; returns (proc, logfile)."""
     oc_cmd = 'curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard'
     oc_log = (RESULTS / 'openclaw_install.log').open('a', encoding='utf-8')
     oc_log.write(f"\n[{now()}] $ {oc_cmd}\n")
@@ -286,10 +322,8 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
     provider_id = ocfg.get('provider_id', 'vllm')
     model_ref = ocfg.get('model_ref') or f'{provider_id}/{model_id}'
     gateway_port = int(ocfg.get('gateway_port', 18789))
-    gateway_token = os.environ.get('OPENCLAW_GATEWAY_TOKEN') or ocfg.get('gateway_token') or 'colab-openclaw-local-token'
-    os.environ['OPENCLAW_GATEWAY_TOKEN'] = gateway_token
-    os.environ['VLLM_API_KEY'] = ocfg.get('vllm_api_key', 'vllm-local')
-    env = {'OPENCLAW_GATEWAY_TOKEN': gateway_token, 'VLLM_API_KEY': os.environ['VLLM_API_KEY']}
+    env = oc_env(config)
+    os.environ.update(env)  # so the gateway started later in THIS process inherits the token
 
     onboard = (
         PATH_PREFIX
@@ -308,8 +342,8 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
     # CRITICAL infer fixes for a local OpenAI-compat backend (validated): without
     # requiresStringContent the gateway returns an empty completion, and without
     # maxTokens < contextWindow the request overflows -> incomplete_result. Only the
-    # `models.providers.<id>.models[0]...` index form is valid ([] errors). Applied only
-    # when the config supplies a `compat` block (legacy DiffusionGemma config omits it).
+    # `models.providers.<id>.models[0]...` index form is valid. Applied only when the config
+    # supplies a `compat` block (legacy DiffusionGemma config omits it).
     compat = ocfg.get('compat')
     applied = []
     if compat:
@@ -328,14 +362,13 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
     run(PATH_PREFIX + 'openclaw config file', 'openclaw_config.log', check=False, env=env, timeout=60)
     run(PATH_PREFIX + 'openclaw models list --json', 'openclaw_models.log', check=False, env=env, timeout=120)
     return {'model_ref': model_ref, 'provider_id': provider_id, 'gateway_port': gateway_port,
-            'gateway_token_set': bool(gateway_token), 'compat_applied': applied}
+            'gateway_token_set': bool(env['OPENCLAW_GATEWAY_TOKEN']), 'compat_applied': applied}
 
 
 def start_openclaw_gateway(config: Dict[str, Any]) -> Dict[str, Any]:
     ocfg = config.get('openclaw', {})
     gateway_port = int(ocfg.get('gateway_port', 18789))
-    env = {'OPENCLAW_GATEWAY_TOKEN': os.environ.get('OPENCLAW_GATEWAY_TOKEN', 'colab-openclaw-local-token'),
-           'VLLM_API_KEY': os.environ.get('VLLM_API_KEY', 'vllm-local')}
+    env = oc_env(config)
     cmd = PATH_PREFIX + 'setsid nohup openclaw gateway run > ' + str(RESULTS / 'openclaw_gateway.log') + \
           ' 2>&1 < /dev/null & echo $! > ' + str(RESULTS / 'openclaw_gateway.pid')
     run(cmd, 'openclaw_gateway_start.log', check=False, env=env, timeout=60)
@@ -345,25 +378,63 @@ def start_openclaw_gateway(config: Dict[str, Any]) -> Dict[str, Any]:
     return {'gateway_port': gateway_port, 'pid_file': str(RESULTS / 'openclaw_gateway.pid')}
 
 
+def _infer_cmd(model_ref: str, prompt_text: str, transport: str) -> str:
+    # transport 'gateway' -> --gateway; anything else -> direct infer (no flag), the robust path.
+    flag = '--gateway ' if transport == 'gateway' else ''
+    return (PATH_PREFIX + 'openclaw infer model run ' + flag
+            + '--model ' + shlex.quote(model_ref) + ' --prompt ' + shlex.quote(prompt_text) + ' --json')
+
+
 # ---------------------------------------------------------------------------
-# Phase: bootstrap (serve backend + onboard OpenClaw), detached + polled
+# Generic detached-phase scaffolding
+# ---------------------------------------------------------------------------
+
+def _launch_worker(worker: str, status_path: Path, done_path: Path, log_name: str, token: str) -> None:
+    """Fast action: clear markers, launch `--worker <worker>` detached, return immediately."""
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    for marker in (done_path, status_path):
+        if marker.exists():
+            marker.unlink()
+    write_status(status_path, 'launching')
+    worker_log = (RESULTS / log_name).open('a', encoding='utf-8')
+    subprocess.Popen([sys.executable, str(SELF_PATH), '--worker', worker],
+                     stdout=worker_log, stderr=subprocess.STDOUT, start_new_session=True)
+    print(token)
+
+
+def _emit_status(status_path: Path, done_path: Path, token: str, extra_detail=None) -> None:
+    """Fast action: print `<TOKEN>=running|ready|failed` for the launcher's poll loop."""
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    detail: Dict[str, Any] = {}
+    if done_path.exists():
+        try:
+            done = json.loads(done_path.read_text(encoding='utf-8'))
+        except Exception:
+            done = {'ok': False}
+        detail['done'] = done
+        state = 'ready' if done.get('ok') else 'failed'
+    else:
+        if status_path.exists():
+            try:
+                detail['status'] = json.loads(status_path.read_text(encoding='utf-8'))
+            except Exception:
+                pass
+        state = 'running'
+    if extra_detail:
+        detail.update(extra_detail)
+    print(f'{token}={state}')
+    print(f'{token}_DETAIL=' + json.dumps(detail))
+
+
+# ---------------------------------------------------------------------------
+# Phase: bootstrap (serve backend + onboard OpenClaw)
 # ---------------------------------------------------------------------------
 
 def bootstrap() -> None:
-    """Fast action: launch the heavy bootstrap DETACHED and return immediately."""
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    for marker in (DONE_PATH, STATUS_PATH):
-        if marker.exists():
-            marker.unlink()
-    write_status(STATUS_PATH, 'launching')
-    worker_log = (RESULTS / 'bootstrap_worker.log').open('a', encoding='utf-8')
-    subprocess.Popen([sys.executable, str(SELF_PATH), '--worker', 'bootstrap'],
-                     stdout=worker_log, stderr=subprocess.STDOUT, start_new_session=True)
-    print('BOOTSTRAP_LAUNCHED')
+    _launch_worker('bootstrap', STATUS_PATH, DONE_PATH, 'bootstrap_worker.log', 'BOOTSTRAP_LAUNCHED')
 
 
 def _bootstrap_run() -> None:
-    """Heavy bootstrap, executed detached on the VM (not inside a colab exec)."""
     RESULTS.mkdir(parents=True, exist_ok=True)
     config = load_json(CONFIG_PATH)
     scfg = serve_cfg(config)
@@ -394,7 +465,7 @@ def _bootstrap_run() -> None:
     except Exception as exc:
         manifest['ok'] = False
         manifest['error'] = repr(exc)
-        append(RESULTS / 'error.log', f"[{now()}] {exc!r}\n")
+        append(RESULTS / 'error.log', f"[{now()}] bootstrap {exc!r}\n")
     manifest['finished_at'] = now()
     write_json(RESULTS / 'manifest.json', manifest)
     ok = bool(manifest.get('ok'))
@@ -413,67 +484,54 @@ def _probe_serve_up(config: Dict[str, Any]) -> bool:
 
 
 def bootstrap_status() -> None:
-    """Fast action: report bootstrap progress for the launcher's poll loop."""
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    detail: Dict[str, Any] = {}
-    if DONE_PATH.exists():
-        try:
-            done = json.loads(DONE_PATH.read_text(encoding='utf-8'))
-        except Exception:
-            done = {'ok': False}
-        detail['done'] = done
-        state = 'ready' if done.get('ok') else 'failed'
-    else:
-        if STATUS_PATH.exists():
-            try:
-                detail['status'] = json.loads(STATUS_PATH.read_text(encoding='utf-8'))
-            except Exception:
-                pass
-        state = 'running'
     try:
-        detail['serve_up'] = _probe_serve_up(load_json(CONFIG_PATH))
+        up = {'serve_up': _probe_serve_up(load_json(CONFIG_PATH))}
     except Exception:
-        detail['serve_up'] = False
-    print('BOOTSTRAP_STATE=' + state)
-    print('BOOTSTRAP_DETAIL=' + json.dumps(detail))
+        up = {'serve_up': False}
+    _emit_status(STATUS_PATH, DONE_PATH, 'BOOTSTRAP_STATE', up)
 
 
 # ---------------------------------------------------------------------------
-# Phase: prompt (single synchronous infer — smoke test)
+# Phase: prompt (single infer — smoke test), detached + polled
 # ---------------------------------------------------------------------------
-
-def _infer_cmd(model_ref: str, prompt_text: str, transport: str) -> str:
-    # transport 'gateway' -> --gateway; anything else -> direct infer (no flag), the robust path.
-    flag = '--gateway ' if transport == 'gateway' else ''
-    return (PATH_PREFIX + 'openclaw infer model run ' + flag
-            + '--model ' + shlex.quote(model_ref) + ' --prompt ' + shlex.quote(prompt_text) + ' --json')
-
 
 def prompt() -> None:
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    config = load_json(CONFIG_PATH)
-    task = load_json(TASK_PATH)
-    manifest = load_json(RESULTS / 'manifest.json', default={})
-    prompt_text = task.get('prompt') or 'Reply with exactly: smoke-ok'
-    model_id = config['model']['id']
-    provider_id = config.get('openclaw', {}).get('provider_id', 'vllm')
-    model_ref = config.get('openclaw', {}).get('model_ref') or f'{provider_id}/{model_id}'
-    transport = task.get('transport', 'gateway')
-    env = {'OPENCLAW_GATEWAY_TOKEN': os.environ.get('OPENCLAW_GATEWAY_TOKEN', 'colab-openclaw-local-token'),
-           'VLLM_API_KEY': os.environ.get('VLLM_API_KEY', 'vllm-local')}
-    result = run(_infer_cmd(model_ref, prompt_text, transport), 'openclaw_infer.txt',
-                 check=False, env=env, timeout=int(task.get('timeout_seconds', 900)))
+    _launch_worker('prompt', PROMPT_STATUS_PATH, PROMPT_DONE_PATH, 'prompt_worker.log', 'PROMPT_LAUNCHED')
 
-    raw = (RESULTS / 'openclaw_infer.txt').read_text(encoding='utf-8', errors='replace')
-    text = extract_infer_text(raw)
-    if text is not None:
-        write_json(RESULTS / 'openclaw_infer.json', {'text': text})
-    manifest['prompt'] = {'model_ref': model_ref, 'transport': transport,
-                          'returncode': result['returncode'], 'got_text': text is not None}
-    manifest['ok'] = bool(manifest.get('ok', True)) and result['returncode'] == 0
+
+def _prompt_run() -> None:
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    manifest = load_json(RESULTS / 'manifest.json', default={})
+    ok = False
+    try:
+        config = load_json(CONFIG_PATH)
+        task = load_json(TASK_PATH)
+        prompt_text = task.get('prompt') or 'Reply with exactly: smoke-ok'
+        provider_id = config.get('openclaw', {}).get('provider_id', 'vllm')
+        model_ref = config.get('openclaw', {}).get('model_ref') or f"{provider_id}/{config['model']['id']}"
+        transport = task.get('transport', 'gateway')
+        result = run(_infer_cmd(model_ref, prompt_text, transport), 'openclaw_infer.txt',
+                     check=False, env=oc_env(config), timeout=int(task.get('timeout_seconds', 900)))
+        raw = (RESULTS / 'openclaw_infer.txt').read_text(encoding='utf-8', errors='replace')
+        text = extract_infer_text(raw)
+        if text is not None:
+            write_json(RESULTS / 'openclaw_infer.json', {'text': text})
+        ok = result['returncode'] == 0 and text is not None
+        manifest['prompt'] = {'model_ref': model_ref, 'transport': transport,
+                              'returncode': result['returncode'], 'got_text': text is not None}
+    except Exception as exc:
+        manifest['error'] = repr(exc)
+        append(RESULTS / 'error.log', f"[{now()}] prompt {exc!r}\n")
+    manifest['ok'] = bool(manifest.get('ok', True)) and ok
     manifest['finished_at'] = now()
     write_json(RESULTS / 'manifest.json', manifest)
+    write_status(PROMPT_STATUS_PATH, 'done', {'ok': ok})
+    PROMPT_DONE_PATH.write_text(json.dumps({'ok': ok, 'time': now()}), encoding='utf-8')
     bundle()
+
+
+def prompt_status() -> None:
+    _emit_status(PROMPT_STATUS_PATH, PROMPT_DONE_PATH, 'PROMPT_STATE')
 
 
 # ---------------------------------------------------------------------------
@@ -481,16 +539,7 @@ def prompt() -> None:
 # ---------------------------------------------------------------------------
 
 def task() -> None:
-    """Fast action: launch the autonomous task worker DETACHED and return immediately."""
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    for marker in (TASK_DONE_PATH, TASK_STATUS_PATH):
-        if marker.exists():
-            marker.unlink()
-    write_status(TASK_STATUS_PATH, 'launching')
-    worker_log = (RESULTS / 'task_worker.log').open('a', encoding='utf-8')
-    subprocess.Popen([sys.executable, str(SELF_PATH), '--worker', 'task'],
-                     stdout=worker_log, stderr=subprocess.STDOUT, start_new_session=True)
-    print('TASK_LAUNCHED')
+    _launch_worker('task', TASK_STATUS_PATH, TASK_DONE_PATH, 'task_worker.log', 'TASK_LAUNCHED')
 
 
 def _task_run() -> None:
@@ -512,8 +561,7 @@ def _task_run() -> None:
         steps = task_cfg.get('steps') or [task_cfg.get('prompt') or task_cfg.get('topic') or 'Summarize your capabilities.']
         total_budget = int(task_cfg.get('timeout_seconds', 1800))
         per_step = int(task_cfg.get('step_timeout_seconds', max(120, total_budget // max(1, len(steps)))))
-        env = {'OPENCLAW_GATEWAY_TOKEN': os.environ.get('OPENCLAW_GATEWAY_TOKEN', 'colab-openclaw-local-token'),
-               'VLLM_API_KEY': os.environ.get('VLLM_API_KEY', 'vllm-local')}
+        env = oc_env(config)
 
         out_md = RESULTS / 'research_result.md'
         out_md.write_text(f"# Autonomous research result\n\n- Topic: {task_cfg.get('topic', '')}\n"
@@ -523,14 +571,17 @@ def _task_run() -> None:
             r = run(_infer_cmd(model_ref, step, transport), f'task_step_{i}.log',
                     check=False, env=env, timeout=per_step)
             raw = (RESULTS / f'task_step_{i}.log').read_text(encoding='utf-8', errors='replace')
-            text = extract_infer_text(raw) or '(no text returned)'
-            append(out_md, f"\n## Step {i}\n\n**Prompt:** {step}\n\n{text}\n")
-            step_results.append({'step': i, 'returncode': r['returncode'], 'chars': len(text)})
+            text = extract_infer_text(raw)
+            got = text is not None
+            body = text if got else '(no text returned)'
+            append(out_md, f"\n## Step {i}\n\n**Prompt:** {step}\n\n{body}\n")
+            step_results.append({'step': i, 'returncode': r['returncode'], 'got_text': got,
+                                 'chars': len(text) if got else 0})
             write_status(TASK_STATUS_PATH, 'running', {'completed_steps': i, 'total_steps': len(steps)})
 
         manifest['task'] = {'mode': task_cfg.get('mode', 'research'), 'transport': transport,
                             'steps': step_results, 'result_file': 'research_result.md'}
-        manifest['ok'] = bool(step_results) and all(s['returncode'] == 0 for s in step_results)
+        manifest['ok'] = bool(step_results) and all(s['returncode'] == 0 and s['got_text'] for s in step_results)
     except Exception as exc:
         manifest['ok'] = False
         manifest['error'] = repr(exc)
@@ -544,25 +595,7 @@ def _task_run() -> None:
 
 
 def task_status() -> None:
-    """Fast action: report autonomous-task progress for the launcher's poll loop."""
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    detail: Dict[str, Any] = {}
-    if TASK_DONE_PATH.exists():
-        try:
-            done = json.loads(TASK_DONE_PATH.read_text(encoding='utf-8'))
-        except Exception:
-            done = {'ok': False}
-        detail['done'] = done
-        state = 'ready' if done.get('ok') else 'failed'
-    else:
-        if TASK_STATUS_PATH.exists():
-            try:
-                detail['status'] = json.loads(TASK_STATUS_PATH.read_text(encoding='utf-8'))
-            except Exception:
-                pass
-        state = 'running'
-    print('TASK_STATE=' + state)
-    print('TASK_DETAIL=' + json.dumps(detail))
+    _emit_status(TASK_STATUS_PATH, TASK_DONE_PATH, 'TASK_STATE')
 
 
 def status() -> None:
@@ -578,30 +611,32 @@ def status() -> None:
 
 
 def bundle() -> None:
+    # Atomic: build a pid-unique temp archive then os.replace it onto ZIP_PATH, so the launcher's
+    # `bundle` exec and a worker's terminal bundle() can't corrupt the zip if they overlap.
     RESULTS.mkdir(parents=True, exist_ok=True)
-    if ZIP_PATH.exists():
-        ZIP_PATH.unlink()
-    shutil.make_archive(str(ZIP_PATH.with_suffix('')), 'zip', str(RESULTS))
+    tmp_base = str(BASE / f'._bundle_{os.getpid()}')
+    archive = shutil.make_archive(tmp_base, 'zip', str(RESULTS))
+    os.replace(archive, str(ZIP_PATH))
     print(f"Wrote {ZIP_PATH}")
 
 
 def main() -> None:
-    # Detached worker entrypoint: `python remote_...py --worker <bootstrap|task>`.
+    # Detached worker entrypoint: `python remote_...py --worker <bootstrap|prompt|task>`.
     if len(sys.argv) >= 3 and sys.argv[1] == '--worker':
         worker = sys.argv[2]
-        if worker == 'bootstrap':
-            _bootstrap_run()
-        elif worker == 'task':
-            _task_run()
-        else:
+        workers = {'bootstrap': _bootstrap_run, 'prompt': _prompt_run, 'task': _task_run}
+        fn = workers.get(worker)
+        if fn is None:
             raise ValueError(f'Unknown worker: {worker}')
+        fn()
         return
     control = load_json(CONTROL_PATH, default={'action': 'status'})
     action = control.get('action', 'status')
     dispatch = {
         'bootstrap': bootstrap, 'bootstrap_status': bootstrap_status,
+        'prompt': prompt, 'prompt_status': prompt_status,
         'task': task, 'task_status': task_status,
-        'prompt': prompt, 'status': status, 'bundle': bundle,
+        'status': status, 'bundle': bundle,
     }
     fn = dispatch.get(action)
     if fn is None:

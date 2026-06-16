@@ -68,9 +68,12 @@ the full record. They override the idealized assumptions above.
    failure is OpenClaw-side config, not the model.
 6. **This account has no L4 entitlement** (`Backend rejected accelerator 'L4'`), so the real
    DiffusionGemma target cannot run here — only the T4 small-model validation. Say so plainly.
-7. **Proven path right now is the dev harness** `runs/dev/e2e.sh` (+ `e2e_boot.py` /
-   `e2e_poll.py` / `e2e_finish.py`), not the committed `bin/` launcher, which still uses the
-   older detached+sparse-poll design and needs refactoring to the short-exec model.
+7. **The committed `bin/` master is now refactored** to the validated short-exec model
+   (2026-06-17): config-driven serve backend (`serve.backend: llama_cpp|vllm`, llama.cpp /
+   Qwen3.5-9B default), EVERY heavy phase detached + polled (`bootstrap`/`prompt`/`task` workers
+   with `*_status` polls — no long synchronous exec), the compat infer-fixes applied, an
+   autonomous `mode:"research"` multi-step task phase, and `BOOTSTRAP_BUDGET` derived from the
+   config's own timeouts. The `runs/dev/*` harness remains a faster scratch path for iteration.
 
 ## llama.cpp / Qwen3.5-9B path + notebook counterpart (2026-06-16)
 

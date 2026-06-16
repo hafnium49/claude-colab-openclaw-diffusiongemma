@@ -72,9 +72,11 @@ cat ./runs/openclaw-dg/manifest.json 2>/dev/null || true
 ## Validated path and gotchas (2026-06-15)
 
 The dev harness (`runs/dev/e2e.sh`) is **confirmed green** end-to-end on a Colab T4 (run #6,
-2026-06-15: `infer_ok=true`, model returns `openclaw-vllm-ok`). The standard `bin/` workflow
-above is the intended product but still uses the older single-exec/detached design and has
-**not** been refactored to this proven path yet. Full details in `docs/validation_findings.md`.
+2026-06-15: `infer_ok=true`, model returns `openclaw-vllm-ok`). The standard `bin/` master has
+since been **refactored (2026-06-17)** to this proven short-exec model: config-driven serve
+backend (llama.cpp/Qwen3.5-9B default, vLLM legacy), all heavy phases detached + polled, compat
+infer-fixes applied, and an autonomous `mode:"research"` task phase. Full details in
+`docs/validation_findings.md`.
 Key points:
 
 - **Run the proven harness:** `bash runs/dev/e2e.sh` provisions a T4 and runs the validated
