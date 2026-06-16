@@ -1,0 +1,13 @@
+{
+  "_comment": "Autonomous, human-free deep-research task. mode=research makes the launcher run the DETACHED task worker (survives the colab-exec window) and poll task_status to completion, then bundle research_result.md. transport=local uses OpenClaw direct infer (no gateway daemon — the robust path). 'steps' run sequentially and are concatenated; each is one self-hosted-LLM call (no paid API). Extend with OpenClaw skills/web by onboarding WITHOUT --skip-skills for true tool-using deep research.",
+  "mode": "research",
+  "transport": "local",
+  "timeout_seconds": 3600,
+  "topic": "Tradeoffs of self-hosting an LLM on a single GPU vs. paid inference APIs.",
+  "steps": [
+    "List the main dimensions to compare self-hosted single-GPU LLM inference against paid inference APIs (cost, latency, throughput, privacy, control, ops burden, capability ceiling). One line each.",
+    "For a single 16GB GPU (e.g. a T4) running a 4-bit ~9B model, give concrete numbers/ranges where you can: tokens/sec, context limits, and what breaks at higher load.",
+    "When does a paid API clearly win, and when does self-hosting clearly win? Give 3 scenarios each.",
+    "Synthesize the above into a 5-bullet executive summary with a final recommendation heuristic."
+  ]
+}

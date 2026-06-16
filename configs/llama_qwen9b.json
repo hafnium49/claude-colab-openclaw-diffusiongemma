@@ -1,0 +1,30 @@
+{
+  "_comment": "VALIDATED fee-free path: llama.cpp serves Qwen3.5-9B (4-bit GGUF) on a Colab T4, OpenClaw points at it on loopback. No paid LLM API. See docs/t4_llama_cpp_serving.md. vLLM can't serve >=3B on a T4 (FlashInfer/sm_75 crash), so llama.cpp is the backend here.",
+  "model": {
+    "id": "Qwen3.5-9B",
+    "gguf_repo": "lmstudio-community/Qwen3.5-9B-GGUF",
+    "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf"
+  },
+  "serve": {
+    "backend": "llama_cpp",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 900,
+    "llama_cpp": {
+      "wheel": "llama-cpp-python[server]==0.3.29",
+      "wheel_index": "https://abetlen.github.io/llama-cpp-python/whl/cu124",
+      "server_args": ["--n_gpu_layers", "99", "--n_ctx", "4096"]
+    }
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": false,
+      "maxTokens": 1024,
+      "contextWindow": 4096
+    }
+  }
+}

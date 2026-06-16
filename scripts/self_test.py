@@ -17,7 +17,10 @@ required = [
     'remote/colab_exec_stub.py',
     'configs/diffusiongemma_nvfp4.json',
     'configs/smoke_test_tiny.json',
+    'configs/llama_qwen9b.json',
+    'configs/llama_smoke.json',
     'examples/prompt_task.json',
+    'examples/research_task.json',
     'notebooks/_gen_notebook.py',
     'notebooks/openclaw_chat_colab.ipynb',
 ]
@@ -27,7 +30,9 @@ for rel in required:
     if not path.exists():
         raise SystemExit(f'Missing required file: {rel}')
 
-for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json', 'examples/prompt_task.json',
+for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json',
+            'configs/llama_qwen9b.json', 'configs/llama_smoke.json',
+            'examples/prompt_task.json', 'examples/research_task.json',
             'notebooks/openclaw_chat_colab.ipynb']:
     with (ROOT / rel).open('r', encoding='utf-8') as f:
         json.load(f)
