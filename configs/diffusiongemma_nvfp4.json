@@ -24,6 +24,8 @@
       "1",
       "--gpu-memory-utilization",
       "0.90",
+      "--max-model-len",
+      "8192",
       "--hf-overrides",
       "{\"diffusion_sampler\":\"entropy_bound\",\"diffusion_entropy_bound\":0.1}",
       "--default-chat-template-kwargs",
