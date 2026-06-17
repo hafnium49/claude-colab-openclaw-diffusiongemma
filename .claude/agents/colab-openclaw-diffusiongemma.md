@@ -146,7 +146,11 @@ llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). See `docs/t4_llama_cpp_serving.md
   one skill** via `openclaw config set agents.defaults.skills '["deep-research"]'` — else the ~20
   bundled skills inject ~8.9k tokens and OVERFLOW a small model's prompt (`Skills (1/58 ready)` when
   scoped). Validated GREEN on T4 (LFM2.5: 4 real steps, step 4 synthesized).
-- **DiffusionGemma on L4 (Path B) — validated up to serve, 2026-06-17.** NVFP4 is Blackwell-native
+- **DiffusionGemma on L4 (Path B) — FULL END-TO-END GREEN, 2026-06-17** (gateway → vLLM → 26B-NVFP4
+  returned a real thinking-mode completion: `ok:true`, `got_text:true`, `returncode:0`, served model
+  `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4`; whole run ~12 min — bootstrap ready ~+700s, infer ~30s — on
+  a 24 GB L4. **Requires `colab` ≥ 0.6.0** (keep-alive prerequisite above): the ~12-min cold start only
+  finishes once the VM stops idle-pruning.) NVFP4 is Blackwell-native
   but **vLLM loads it on L4 (Ada sm_89) via the Marlin FP4 weight-only fallback** — confirmed: the
   26B-NVFP4 + `DiffusionGemmaForBlockDiffusion` (via `--trust-remote-code`) loaded on a 24 GB L4. TWO
   required fixes: (a) `start_vllm` now **shlex.quotes each serve arg** — JSON args like `--hf-overrides`

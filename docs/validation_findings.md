@@ -42,7 +42,9 @@ longer than ~10 min (DiffusionGemma's vLLM-nightly install + ~13 GB NVFP4 downlo
 (`GET https://colab.research.google.com/tun/m/<endpoint>/keep-alive/`) that needs no project quota and
 works for everyone. After upgrading, `~/.config/colab-cli/colab.log` shows the `tun/.../keep-alive/`
 GETs and **no `USER_PROJECT_DENIED`**, and the VM survives past ~12 min — so the long DiffusionGemma
-cold start can complete.
+cold start can complete. **Confirmed 2026-06-17:** the full `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4`
+run went GREEN end-to-end on an L4 (gateway → vLLM → infer, `ok:true` / `got_text:true`, real
+thinking-mode reply, ~12 min, clean teardown) — the project's actual target, finally reached.
 
 Also hardened on `main` (2026-06-17): the launcher's `poll_worker` wraps the status upload/exec in
 `timeout` via a resolved `$COLAB_BIN`, so a flaky kernel websocket that hangs one exec for minutes

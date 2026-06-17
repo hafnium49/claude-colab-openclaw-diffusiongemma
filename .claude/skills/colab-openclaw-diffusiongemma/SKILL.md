@@ -145,7 +145,11 @@ recipe in `docs/t4_llama_cpp_serving.md`.
   Onboard **without `--skip-skills`**, install a `deep-research` SKILL.md in `~/.openclaw/skills/`, and
   **scope to it** with `openclaw config set agents.defaults.skills '["deep-research"]'` — otherwise the
   ~20 bundled skills overflow a small model's prompt (~8.9k tokens). Validated GREEN (step 4 synthesizes).
-- **DiffusionGemma on L4 (Path B) reaches serve, 2026-06-17:** NVFP4 loads on L4 via vLLM's Marlin FP4
+- **DiffusionGemma on L4 (Path B) — FULL END-TO-END GREEN, 2026-06-17** (gateway → vLLM → 26B-NVFP4
+  returned a real thinking-mode completion: `ok:true`, `got_text:true`, served model
+  `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4`; ~12 min total on a 24 GB L4. **Needs `colab` ≥ 0.6.0** — the
+  long cold start only completes once the VM stops idle-pruning; see the prerequisite up top.) NVFP4
+  loads on L4 via vLLM's Marlin FP4
   **weight-only** fallback (no Blackwell needed); `DiffusionGemmaForBlockDiffusion` loads via
   `--trust-remote-code`. Two required fixes now in the harness/config: `start_vllm` **shlex-quotes each
   serve arg** (JSON args were shell-stripped → "invalid loads value"), and the config passes
