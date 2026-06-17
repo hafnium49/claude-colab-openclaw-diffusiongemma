@@ -95,9 +95,9 @@ Key points:
   `compat.requiresStringContent true` (+ `compat.supportsTools false`) and a token budget with
   model `maxTokens` < vLLM `--max-model-len` (serve `8192`, `maxTokens 1024`). Otherwise the
   gateway returns `incomplete_result`.
-- **GPU reality:** L4 is **not entitled** on this free account, so DiffusionGemma-26B cannot
-  run here — only the T4 small-model (`Qwen/Qwen2.5-0.5B-Instruct`) validation. DiffusionGemma
-  needs Colab Pro/Enterprise or a rented L4/A100.
+- **GPU reality (updated 2026-06-17):** the account now has **Colab Pro + compute units**, so
+  **L4/A100 work** (the old "L4 not entitled" no longer applies). DiffusionGemma-26B runs on an L4;
+  prefer L4 over A100 (~3× cheaper). T4 still serves the llama.cpp models. See the 2026-06-17 section.
 
 ## llama.cpp / Qwen3.5-9B + notebook counterpart (2026-06-16)
 
@@ -120,3 +120,25 @@ recipe in `docs/t4_llama_cpp_serving.md`.
   onboard → chat → autonomous task → inline dashboard). **The bash harness is master; mirror the
   notebook to it, not the reverse.** Roadmap: fee-free self-hosted LLM running autonomous,
   human-free jobs (deep research) — cell 5 scaffolds it.
+
+## 2026-06-17 — LFM2.5, native-agent research, DiffusionGemma/L4, cost + keep-session
+
+- **Configs now validated GREEN on T4 (llama.cpp):** `llama_qwen9b.json` (Qwen3.5-9B, best quality)
+  and **`llama_lfm2.json`** (LiquidAI **LFM2.5-8B-A1B**, ~134 tok/s ≈ 4× faster; needs the prebuilt
+  cu124 wheel **0.3.30** for the `lfm2moe` arch).
+- **`mode:"research"` now drives the NATIVE OpenClaw agent**, not a hand-rolled loop:
+  `openclaw agent --local --agent main --session-key <shared> --message <step> --json` per step
+  (`--local` avoids the gateway operator-scope issue; shared `--session-key` = context across steps).
+  Onboard **without `--skip-skills`**, install a `deep-research` SKILL.md in `~/.openclaw/skills/`, and
+  **scope to it** with `openclaw config set agents.defaults.skills '["deep-research"]'` — otherwise the
+  ~20 bundled skills overflow a small model's prompt (~8.9k tokens). Validated GREEN (step 4 synthesizes).
+- **DiffusionGemma on L4 (Path B) reaches serve, 2026-06-17:** NVFP4 loads on L4 via vLLM's Marlin FP4
+  **weight-only** fallback (no Blackwell needed); `DiffusionGemmaForBlockDiffusion` loads via
+  `--trust-remote-code`. Two required fixes now in the harness/config: `start_vllm` **shlex-quotes each
+  serve arg** (JSON args were shell-stripped → "invalid loads value"), and the config passes
+  **`--max-model-len 8192`** (else vLLM reserves KV for the 256K context → OOM). Use RedHat's recipe.
+- **Cost (`[[colab-gpu-costs]]`):** L4 ≈ ¥57/hr, A100 ≈ ¥170/hr (~3× L4), T4 cheapest; a DiffusionGemma
+  L4 bootstrap ≈ ¥45. **`--keep-session` does NOT make a launcher re-run reuse the session** — it
+  spins a SECOND same-named runtime (duplicate billing). Use it only for manual inspection; kill
+  orphaned/colliding sessions via the colab-cli client `unassign` API (`colab stop -s` can't reach
+  store-less sessions). Always tear down promptly.

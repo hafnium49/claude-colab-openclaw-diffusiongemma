@@ -66,8 +66,10 @@ the full record. They override the idealized assumptions above.
 5. **Diagnose with a direct vLLM probe.** A raw `/v1/chat/completions` call (with the API key)
    isolates vLLM from OpenClaw — if it returns clean text with `finish_reason=stop`, any
    failure is OpenClaw-side config, not the model.
-6. **This account has no L4 entitlement** (`Backend rejected accelerator 'L4'`), so the real
-   DiffusionGemma target cannot run here — only the T4 small-model validation. Say so plainly.
+6. **L4/A100 now available** (the account has Colab Pro + compute units as of 2026-06-17) —
+   superseding the earlier "no L4 entitlement". Prefer **L4** for DiffusionGemma and **T4** for the
+   llama.cpp paths; A100 only if 24 GB is too tight (it's ~3× L4's unit cost). See the 2026-06-17
+   notes below for the validated DiffusionGemma-on-L4 path and the cost table (`[[colab-gpu-costs]]`).
 7. **The committed `bin/` master is now refactored** to the validated short-exec model
    (2026-06-17): config-driven serve backend (`serve.backend: llama_cpp|vllm`, llama.cpp /
    Qwen3.5-9B default), EVERY heavy phase detached + polled (`bootstrap`/`prompt`/`task` workers
@@ -111,3 +113,34 @@ llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). See `docs/t4_llama_cpp_serving.md
   interactive testing + the inline dashboard. **The bash harness is master — change it first,
   mirror the notebook.** Roadmap: self-hosted LLM (no API fee) running autonomous, headless
   jobs (deep research) — cell 5 is the scaffold for that.
+
+## 2026-06-17 — LFM2.5, native-agent research, DiffusionGemma/L4, cost + keep-session gotcha
+
+- **Second validated T4 model: `configs/llama_lfm2.json`** — LiquidAI **LFM2.5-8B-A1B** (lfm2moe MoE)
+  via llama.cpp, GREEN on T4 (~134 tok/s, ~4× Qwen3.5-9B). Needs the prebuilt cu124 wheel **0.3.30**
+  (knows `lfm2moe`). Validated llama.cpp configs: `llama_qwen9b.json` (best quality) + `llama_lfm2.json`
+  (fastest).
+- **Autonomous research now uses the NATIVE OpenClaw agent, not a Python loop** (`_task_run`):
+  per step `openclaw agent --local --agent main --session-key <shared> --model <ref> --message <step>
+  --json`. `--local` = embedded (no gateway → avoids `connected-no-operator-scope`); a SHARED
+  `--session-key` keeps context server-side so "synthesize the above" works. Onboard WITHOUT
+  `--skip-skills`; install a `deep-research` SKILL.md under `~/.openclaw/skills/`; and **scope to that
+  one skill** via `openclaw config set agents.defaults.skills '["deep-research"]'` — else the ~20
+  bundled skills inject ~8.9k tokens and OVERFLOW a small model's prompt (`Skills (1/58 ready)` when
+  scoped). Validated GREEN on T4 (LFM2.5: 4 real steps, step 4 synthesized).
+- **DiffusionGemma on L4 (Path B) — validated up to serve, 2026-06-17.** NVFP4 is Blackwell-native
+  but **vLLM loads it on L4 (Ada sm_89) via the Marlin FP4 weight-only fallback** — confirmed: the
+  26B-NVFP4 + `DiffusionGemmaForBlockDiffusion` (via `--trust-remote-code`) loaded on a 24 GB L4. TWO
+  required fixes: (a) `start_vllm` now **shlex.quotes each serve arg** — JSON args like `--hf-overrides`
+  / `--default-chat-template-kwargs` were getting their quotes stripped by the shell (vLLM: "invalid
+  loads value"); (b) **pass `--max-model-len`** (e.g. 8192) — without it vLLM reserves KV for the
+  model's 256K context and OOMs (`5.59 GiB KV needed, 1.98 available`). Use RedHat's exact serve recipe.
+- **COST (`[[colab-gpu-costs]]`):** T4 ~1.8 / L4 ~4.8–5 / A100 ~15 CU·hr⁻¹; ~¥11.8/CU → L4 ≈ ¥57/hr,
+  A100 ≈ ¥170/hr. A DiffusionGemma L4 bootstrap ≈ 3.5–4 CU ≈ ¥45. Tear sessions down promptly.
+- **`--keep-session` GOTCHA (cost trap):** re-running the launcher does **NOT** reuse a kept session —
+  `colab new` makes a SECOND runtime with the same name → **duplicate billing + name collision**.
+  `--keep-session` is for manual inspection only, not launcher re-runs. To kill an **orphaned** session
+  (not in the CLI store, so `colab stop -s` can't reach it), use the client API:
+  `from colab_cli.common import state; from colab_cli.auth import AuthProvider;
+  state.auth_provider=AuthProvider.ADC; [state.client.unassign(a.endpoint) for a in
+  state.client.list_assignments()]` (run with the colab-cli venv python).
