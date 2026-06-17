@@ -8,6 +8,19 @@ allowed-tools: Bash Read Write Edit Glob Grep
 
 Use this skill for a job-oriented local Claude Code workflow that provisions a Colab GPU, starts vLLM, configures OpenClaw to use the Colab-local vLLM endpoint, runs a prompt through OpenClaw's inference CLI, and downloads a single result bundle.
 
+## ⚠️ Prerequisite — `colab` CLI must be ≥ 0.6.0 (keep-alive bug)
+
+Run `colab version` first. **≤ 0.5.x has a keep-alive bug**: its keep-alive RPC returns
+`403 USER_PROJECT_DENIED` for external accounts, so Colab **idle-prunes the VM at ~10–12 min no matter
+how busy the kernel is** (confirmed on T4 *and* L4, even under a continuous heartbeat) — silently
+killing any bootstrap longer than ~10 min (vLLM / DiffusionGemma cold start). This is the root cause
+behind "DiffusionGemma reaches serve but the run never completes". Fix:
+`uv tool upgrade google-colab-cli` (or `colab update --install`). **0.6.0 (2026-06-15)** switched to a
+tunnel keep-alive (`GET /tun/m/<endpoint>/keep-alive/`, no project quota) that works for everyone; the
+VM then survives long enough for DiffusionGemma's full cold start. Verify: no `USER_PROJECT_DENIED` in
+`~/.config/colab-cli/colab.log` and a session lives past ~12 min. (The launcher's `poll_worker` is also
+`timeout`-hardened via `$COLAB_BIN` so a hung kernel exec can't stall the poll loop past the prune.)
+
 ## Standard workflow
 
 1. Validate local files:

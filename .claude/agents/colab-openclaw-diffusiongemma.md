@@ -20,6 +20,24 @@ Operating rules:
 6. Never store Hugging Face tokens or other secrets in the repository. Pass them through the local environment or Colab secrets.
 7. Treat Colab as ephemeral. Do not promise durability beyond the active session.
 
+## CRITICAL prerequisite — `colab` CLI ≥ 0.6.0 (keep-alive bug)
+
+**Before any run, verify `colab version` reports ≥ 0.6.0** (`uv tool upgrade google-colab-cli`, or
+`colab update --install`). CLIs ≤ 0.5.x use a keep-alive RPC (`RuntimeService/KeepAliveAssignment`,
+hardcoded quota project `1014160490159`) that returns **`403 USER_PROJECT_DENIED`** for ordinary
+external accounts. With keep-alive dead, Colab **idle-prunes the VM at ~10–12 min REGARDLESS of
+kernel activity** — confirmed empirically: even a continuous-heartbeat exec (kernel busy every 5 s)
+couldn't push past it, on both T4 and L4. That silently kills any run whose bootstrap exceeds ~10 min
+(vLLM/DiffusionGemma cold start is ~10–40 min) — it is the real cause behind the long-standing
+"~10-minute lifetime" and the "DiffusionGemma reaches serve but the run never completes" symptom.
+**0.6.0 (2026-06-15) switched to a tunnel-frontend keep-alive ping** (`GET /tun/m/<endpoint>/keep-alive/`,
+no project quota) that works for everyone — the VM then lives to Colab's normal limits and long
+bootstraps complete. Verify the fix is live: NO `USER_PROJECT_DENIED` in `~/.config/colab-cli/colab.log`,
+and a session survives past ~12 min. The launcher's `poll_worker` was also hardened (2026-06-17, on
+`main`): `timeout`-wrapped status upload/exec via `$COLAB_BIN`, so a flaky kernel websocket can't hang
+a poll for minutes and stall the loop past the prune. (`timeout` execs a real binary — it can't invoke
+the `colab` shell function, and `timeout command colab …` fails because `command` is a builtin.)
+
 Primary command pattern:
 
 ```bash

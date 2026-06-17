@@ -23,6 +23,31 @@ Last updated: 2026-06-15. Account: free-tier consumer Colab (`hafnium49@gmail.co
   VRAM (L4+). **L4 is not entitled on this free account** (`Backend rejected accelerator
   'L4'`). The proven small-model path lifts to DiffusionGemma only on a bigger GPU
   (Colab Pro/Enterprise or a rented L4/A100).
+  **(Superseded 2026-06-17: L4 provisions fine now — the real blocker was the keep-alive bug
+  below, not the GPU.)**
+
+## ⚠️ The "~10-minute lifetime" was a colab-cli keep-alive bug (root cause + fix, 2026-06-17)
+
+The single biggest source of lost runs — including "DiffusionGemma reaches serve but never
+completes" — was **not** our workload. `google-colab-cli ≤ 0.5.x` keeps a VM alive via
+`RuntimeService/KeepAliveAssignment` with a **hardcoded quota project `1014160490159`**; for ordinary
+external accounts that RPC returns **`403 USER_PROJECT_DENIED`**, so Colab **idle-prunes the runtime at
+~10–12 min**. Critically this cap is **independent of kernel activity** — proven by a continuous
+heartbeat exec (kernel busy every 5 s) that still died at ~12 min, on **both T4 and L4**. Any bootstrap
+longer than ~10 min (DiffusionGemma's vLLM-nightly install + ~13 GB NVFP4 download + load + warmup ≈
+20–40 min) therefore cannot finish.
+
+**Fix: upgrade the CLI to ≥ 0.6.0** (`uv tool upgrade google-colab-cli`, or `colab update --install`).
+0.6.0 (2026-06-15) replaced the project-scoped RPC with a **tunnel-frontend keep-alive ping**
+(`GET https://colab.research.google.com/tun/m/<endpoint>/keep-alive/`) that needs no project quota and
+works for everyone. After upgrading, `~/.config/colab-cli/colab.log` shows the `tun/.../keep-alive/`
+GETs and **no `USER_PROJECT_DENIED`**, and the VM survives past ~12 min — so the long DiffusionGemma
+cold start can complete.
+
+Also hardened on `main` (2026-06-17): the launcher's `poll_worker` wraps the status upload/exec in
+`timeout` via a resolved `$COLAB_BIN`, so a flaky kernel websocket that hangs one exec for minutes
+can't stall the poll loop past the prune. (`timeout` execs a real binary; it can't call the `colab`
+shell function, and `timeout command colab …` fails because `command` is a builtin.)
 
 ## Validated stack (T4)
 
@@ -42,9 +67,10 @@ Last updated: 2026-06-15. Account: free-tier consumer Colab (`hafnium49@gmail.co
 - **Isolate session state with `--config <file>`** so concurrent/other invocations don't
   prune the live session. A stray `colab status`/`sessions` against the default state file
   killed a live run early.
-- The CLI's built-in keep-alive daemon **cannot run** on this account (KeepAliveAssignment
-  → 403, "Colab Private API not enabled"; can't enable it on a personal project). This is
-  moot if you keep the kernel active yourself (see architecture below).
+- **Keep-alive: upgrade `colab` to ≥ 0.6.0.** Older CLIs' `KeepAliveAssignment` RPC returns 403
+  `USER_PROJECT_DENIED`, so the VM is idle-pruned ~10–12 min **even with the kernel kept busy** (NOT
+  moot — proven by a continuous heartbeat). 0.6.0 uses a tunnel keep-alive that works. See "The
+  keep-alive bug" section above.
 - `colab exec` cannot pass args and keeps no state between calls — pass inputs via uploaded
   files; default exec timeout is short, so pass `--timeout`.
 
