@@ -160,6 +160,62 @@ def extract_infer_text(raw: str) -> Optional[str]:
     return None
 
 
+def extract_agent_text(raw: str) -> Optional[str]:
+    """Salvage the reply text from an `openclaw agent ... --json` log.
+
+    The agent JSON shape varies by version (payloads/metadata/deliveryStatus, or openai/infer-style
+    fallbacks), and the log also echoes the command, so scan every {...} object (raw_decode is
+    brace/quote aware) and keep the LAST one that yields non-blank text. Each object is checked in
+    priority order (payloads first) and returns the FIRST populated field so a request echo doesn't
+    get mistaken for the reply."""
+    def _from_obj(obj: Any) -> Optional[str]:
+        if not isinstance(obj, dict):
+            return None
+        pl = obj.get('payloads')
+        if isinstance(pl, list):
+            parts = []
+            for it in pl:
+                if isinstance(it, str) and it.strip():
+                    parts.append(it)
+                elif isinstance(it, dict):
+                    for k in ('text', 'content', 'body'):
+                        v = it.get(k)
+                        if isinstance(v, str) and v.strip():
+                            parts.append(v)
+                            break
+            if parts:
+                return "\n".join(parts).strip()
+        for k in ('reply', 'response', 'text', 'content', 'output', 'message'):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        ch = obj.get('choices')
+        if isinstance(ch, list) and ch and isinstance(ch[0], dict):
+            msg = ch[0].get('message') or {}
+            if isinstance(msg, dict) and isinstance(msg.get('content'), str) and msg['content'].strip():
+                return msg['content'].strip()
+        outs = obj.get('outputs')
+        if isinstance(outs, list) and outs and isinstance(outs[0], dict):
+            t = outs[0].get('text')
+            if isinstance(t, str) and t.strip():
+                return t.strip()
+        return None
+
+    dec = json.JSONDecoder()
+    best: Optional[str] = None
+    idx = raw.find('{')
+    while idx != -1:
+        try:
+            obj, end = dec.raw_decode(raw, idx)
+            t = _from_obj(obj)
+            if t:
+                best = t
+            idx = raw.find('{', max(end, idx + 1))
+        except json.JSONDecodeError:
+            idx = raw.find('{', idx + 1)
+    return best
+
+
 def oc_env(config: Dict[str, Any]) -> Dict[str, str]:
     """Resolve the OpenClaw gateway token + provider api key.
 
@@ -402,6 +458,27 @@ def install_openclaw_bg():
     return proc, oc_log
 
 
+DEEP_RESEARCH_SKILL = """---
+name: deep-research
+description: Conduct rigorous, autonomous multi-step research on a topic — build on prior steps in the session, give concrete evidence, and synthesize a final answer. Use for deep-research tasks.
+---
+
+# Deep research
+
+You are running a multi-step research task. The steps share one session, so you RETAIN context.
+
+1. Each step builds on the earlier steps in THIS session. When a step says "the above" or
+   "synthesize", refer back to your own earlier answers in this conversation — never ask the user
+   to re-supply them.
+2. Be concrete: give numbers, ranges, and real examples where you can. State uncertainty explicitly
+   instead of inventing specifics.
+3. Stay strictly on the topic of the request. Do not drift into unrelated domains or generic filler.
+4. Keep each answer focused and well-structured (short headers, tight bullets). No padding.
+5. For a final synthesis step, integrate ALL earlier findings from this session into a concise
+   executive summary with a clear, actionable recommendation.
+"""
+
+
 def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> Dict[str, Any]:
     ocfg = config.get('openclaw', {})
     model_id = config['model']['id']
@@ -421,9 +498,21 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
         + '--custom-compatibility openai --custom-api-key "${VLLM_API_KEY}" --custom-text-input '
         + f'--gateway-port {gateway_port} --gateway-bind loopback '
         + '--gateway-auth token --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN '
-        + '--skip-daemon --skip-skills --skip-channels --skip-health --skip-ui --json'
+        # NOTE: skills are NOT skipped — the native agent path (openclaw agent) uses them.
+        + '--skip-daemon --skip-channels --skip-health --skip-ui --json'
     )
     run(onboard, 'openclaw_config.log', check=False, env=env, timeout=300)
+
+    # Install a NATIVE OpenClaw skill (best practice) so the agent has a deep-research methodology
+    # instead of a hand-rolled Python loop. A SKILL.md under ~/.openclaw/skills/<name>/ is
+    # auto-discovered (managed/local root). The agent loads it at session start.
+    try:
+        skill_dir = Path(os.path.expanduser('~/.openclaw/skills/deep-research'))
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / 'SKILL.md').write_text(DEEP_RESEARCH_SKILL, encoding='utf-8')
+        run(PATH_PREFIX + 'openclaw skills list', 'openclaw_skills.log', check=False, env=env, timeout=120)
+    except Exception as exc:
+        append(RESULTS / 'error.log', f"[{now()}] skill install {exc!r}\n")
 
     # CRITICAL infer fixes for a local OpenAI-compat backend (validated): without
     # requiresStringContent the gateway returns an empty completion, and without
@@ -469,6 +558,18 @@ def _infer_cmd(model_ref: str, prompt_text: str, transport: str) -> str:
     flag = '--gateway ' if transport == 'gateway' else ''
     return (PATH_PREFIX + 'openclaw infer model run ' + flag
             + '--model ' + shlex.quote(model_ref) + ' --prompt ' + shlex.quote(prompt_text) + ' --json')
+
+
+def _agent_cmd(model_ref: str, message: str, session_key: str, timeout_s: int) -> str:
+    # Native OpenClaw agent turn (best practice, vs. one-shot infer): `--local` runs the EMBEDDED
+    # agent (no gateway -> sidesteps the connected-no-operator-scope issue), and a shared
+    # `--session-key` makes OpenClaw keep conversation context server-side across steps. Loaded
+    # skills (e.g. deep-research) are applied automatically — no hand-rolled chain-of-thought.
+    return (PATH_PREFIX + 'openclaw agent --local --agent main '
+            + '--session-key ' + shlex.quote(session_key) + ' '
+            + '--model ' + shlex.quote(model_ref) + ' '
+            + '--message ' + shlex.quote(message) + ' '
+            + '--timeout ' + str(int(timeout_s)) + ' --json')
 
 
 # ---------------------------------------------------------------------------
@@ -631,9 +732,11 @@ def task() -> None:
 def _task_run() -> None:
     """Heavy autonomous task (deep research), executed detached on the VM.
 
-    Runs each `steps` prompt sequentially through OpenClaw (one self-hosted-LLM call each — no
-    paid API) and accumulates the answers into research_result.md. For true tool-using deep
-    research, onboard WITHOUT --skip-skills so OpenClaw can use web/search skills.
+    NATIVE OpenClaw agent path (best practice — not a hand-rolled chain-of-thought): each step is one
+    `openclaw agent --local` turn sharing a single --session-key, so OpenClaw keeps conversation
+    context server-side across steps (a later "synthesize the above" step actually has the above).
+    The agent applies loaded skills (e.g. the deep-research skill installed in configure_openclaw).
+    Answers accumulate into research_result.md.
     """
     RESULTS.mkdir(parents=True, exist_ok=True)
     manifest = load_json(RESULTS / 'manifest.json', default={})
@@ -643,50 +746,33 @@ def _task_run() -> None:
         task_cfg = load_json(TASK_PATH)
         provider_id = config.get('openclaw', {}).get('provider_id', 'vllm')
         model_ref = config.get('openclaw', {}).get('model_ref') or f"{provider_id}/{config['model']['id']}"
-        transport = task_cfg.get('transport', 'local')
         steps = task_cfg.get('steps') or [task_cfg.get('prompt') or task_cfg.get('topic') or 'Summarize your capabilities.']
         total_budget = int(task_cfg.get('timeout_seconds', 1800))
-        per_step = int(task_cfg.get('step_timeout_seconds', max(120, total_budget // max(1, len(steps)))))
-        ctx_budget = int(task_cfg.get('context_char_budget', 6000))  # cap on prior-step context fed forward
+        per_step = int(task_cfg.get('step_timeout_seconds', max(180, total_budget // max(1, len(steps)))))
+        # One shared session so the agent retains context across steps (server-side, not in Python).
+        session_key = task_cfg.get('session_key') or f"research-{int(time.time())}"
         env = oc_env(config)
 
         out_md = RESULTS / 'research_result.md'
         out_md.write_text(f"# Autonomous research result\n\n- Topic: {task_cfg.get('topic', '')}\n"
-                          f"- Model: {model_ref}\n- Started: {now()}\n", encoding='utf-8')
-        def _clip(s, n):
-            s = (s or '').strip()
-            return s if len(s) <= n else s[:n].rstrip() + ' …[truncated]'
-
+                          f"- Model: {model_ref}\n- Engine: openclaw agent (--local, session "
+                          f"{session_key})\n- Started: {now()}\n", encoding='utf-8')
         step_results = []
-        transcript = []  # (i, step, answer) for steps that returned text — fed forward as context
         for i, step in enumerate(steps, 1):
-            # Thread a BOUNDED transcript of prior answers into this step's prompt so later steps
-            # (e.g. "synthesize the above") actually receive the above. Each prior answer is clipped
-            # so the preamble stays well under the model's context window (ctx_budget chars total).
-            if transcript:
-                per = max(400, ctx_budget // len(transcript))
-                notes = "\n\n".join(f"### Step {j}: {_clip(s_step, 200)}\n{_clip(ans, per)}"
-                                    for (j, s_step, ans) in transcript)
-                prompt_text = ("You are conducting multi-step research. Your earlier findings:\n\n"
-                               f"{notes}\n\n---\nNow complete the next step, building on the findings "
-                               f"above (treat them as \"the above\"):\n\n{step}")
-            else:
-                prompt_text = step
-            r = run(_infer_cmd(model_ref, prompt_text, transport), f'task_step_{i}.log',
-                    check=False, env=env, timeout=per_step)
+            r = run(_agent_cmd(model_ref, step, session_key, per_step), f'task_step_{i}.log',
+                    check=False, env=env, timeout=per_step + 60)
             raw = (RESULTS / f'task_step_{i}.log').read_text(encoding='utf-8', errors='replace')
-            text = extract_infer_text(raw)
+            text = extract_agent_text(raw)
             got = text is not None
             body = text if got else '(no text returned)'
             append(out_md, f"\n## Step {i}\n\n**Prompt:** {step}\n\n{body}\n")
-            if got:
-                transcript.append((i, step, text))
             step_results.append({'step': i, 'returncode': r['returncode'], 'got_text': got,
                                  'chars': len(text) if got else 0})
             write_status(TASK_STATUS_PATH, 'running', {'completed_steps': i, 'total_steps': len(steps)})
 
-        manifest['task'] = {'mode': task_cfg.get('mode', 'research'), 'transport': transport,
-                            'steps': step_results, 'result_file': 'research_result.md'}
+        manifest['task'] = {'mode': task_cfg.get('mode', 'research'), 'engine': 'openclaw-agent',
+                            'session_key': session_key, 'steps': step_results,
+                            'result_file': 'research_result.md'}
         manifest['ok'] = bool(step_results) and all(s['returncode'] == 0 and s['got_text'] for s in step_results)
     except Exception as exc:
         manifest['ok'] = False
