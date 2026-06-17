@@ -294,7 +294,10 @@ def start_vllm(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, Any]:
             env_exports[tok] = os.environ[tok]
 
     args: List[str] = ['vllm', 'serve', shlex.quote(model_id)]
-    args.extend(str(x) for x in vcfg.get('serve_args', []))
+    # shlex.quote EACH serve arg — diffusion configs pass JSON values (e.g. --hf-overrides
+    # '{"diffusion_sampler":"entropy_bound"}'), whose quotes/braces the shell would otherwise strip
+    # (vLLM then errors "invalid loads value: {enable_thinking:true}"). Plain flags quote to themselves.
+    args.extend(shlex.quote(str(x)) for x in vcfg.get('serve_args', []))
     args.extend(['--host', shlex.quote(host), '--port', str(port)])
     if 'api_key' in vcfg:
         args.extend(['--api-key', shlex.quote(str(vcfg['api_key']))])
