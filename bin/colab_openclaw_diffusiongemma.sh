@@ -98,8 +98,12 @@ poll_worker() {
   echo "[$label] waiting up to ${budget}s" | tee -a "$LOG"
   while (( SECONDS - start < budget )); do
     sleep 18
-    colab upload -s "$SESSION" "$tmp" /content/ocdg_control.json >/dev/null 2>&1
-    out=$(colab exec -s "$SESSION" -f "$STUB_SCRIPT" --timeout 90 2>&1)
+    timeout 60 "$COLAB_BIN" --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" upload -s "$SESSION" "$tmp" /content/ocdg_control.json >/dev/null 2>&1
+    # Hard wall-clock cap on the status exec: a flaky Colab kernel websocket can hang an exec for
+    # minutes (observed ~6.5 min), stalling the whole poll loop past the VM's ~10-12 min idle-prune
+    # (the keep-alive RPC is denied on free tier, so only kernel activity holds the VM). `timeout`
+    # kills a hung exec so polling — which keeps the kernel warm — continues.
+    out=$(timeout 150 "$COLAB_BIN" --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" exec -s "$SESSION" -f "$STUB_SCRIPT" --timeout 90 2>&1)
     printf '%s\n' "$out" >> "$LOG"
     state=$(grep -o "${token}=[a-z]*" <<<"$out" | head -1)
     echo "[$label] +$(( SECONDS - start ))s ${state:-no-status}" | tee -a "$LOG"
@@ -120,6 +124,10 @@ need python
 COLAB_AUTH="${COLAB_AUTH:-adc}"
 COLAB_CONFIG="${COLAB_CONFIG:-$OUT_DIR/colab_session_state.json}"
 colab() { command colab --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" "$@"; }
+# Absolute colab binary path for callers that must bypass the shell function: `timeout` execs a
+# real binary and cannot invoke a function (`timeout colab …` would run the binary WITHOUT
+# --auth/--config; `timeout command colab …` fails — 'command' is a builtin, not on PATH).
+COLAB_BIN="$(command -v colab)"
 
 # Tear the session down on ANY exit unless --keep-session, so a failed phase can't leak a billable VM.
 cleanup() {
