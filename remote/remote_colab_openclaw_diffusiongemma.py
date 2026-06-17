@@ -647,20 +647,40 @@ def _task_run() -> None:
         steps = task_cfg.get('steps') or [task_cfg.get('prompt') or task_cfg.get('topic') or 'Summarize your capabilities.']
         total_budget = int(task_cfg.get('timeout_seconds', 1800))
         per_step = int(task_cfg.get('step_timeout_seconds', max(120, total_budget // max(1, len(steps)))))
+        ctx_budget = int(task_cfg.get('context_char_budget', 6000))  # cap on prior-step context fed forward
         env = oc_env(config)
 
         out_md = RESULTS / 'research_result.md'
         out_md.write_text(f"# Autonomous research result\n\n- Topic: {task_cfg.get('topic', '')}\n"
                           f"- Model: {model_ref}\n- Started: {now()}\n", encoding='utf-8')
+        def _clip(s, n):
+            s = (s or '').strip()
+            return s if len(s) <= n else s[:n].rstrip() + ' …[truncated]'
+
         step_results = []
+        transcript = []  # (i, step, answer) for steps that returned text — fed forward as context
         for i, step in enumerate(steps, 1):
-            r = run(_infer_cmd(model_ref, step, transport), f'task_step_{i}.log',
+            # Thread a BOUNDED transcript of prior answers into this step's prompt so later steps
+            # (e.g. "synthesize the above") actually receive the above. Each prior answer is clipped
+            # so the preamble stays well under the model's context window (ctx_budget chars total).
+            if transcript:
+                per = max(400, ctx_budget // len(transcript))
+                notes = "\n\n".join(f"### Step {j}: {_clip(s_step, 200)}\n{_clip(ans, per)}"
+                                    for (j, s_step, ans) in transcript)
+                prompt_text = ("You are conducting multi-step research. Your earlier findings:\n\n"
+                               f"{notes}\n\n---\nNow complete the next step, building on the findings "
+                               f"above (treat them as \"the above\"):\n\n{step}")
+            else:
+                prompt_text = step
+            r = run(_infer_cmd(model_ref, prompt_text, transport), f'task_step_{i}.log',
                     check=False, env=env, timeout=per_step)
             raw = (RESULTS / f'task_step_{i}.log').read_text(encoding='utf-8', errors='replace')
             text = extract_infer_text(raw)
             got = text is not None
             body = text if got else '(no text returned)'
             append(out_md, f"\n## Step {i}\n\n**Prompt:** {step}\n\n{body}\n")
+            if got:
+                transcript.append((i, step, text))
             step_results.append({'step': i, 'returncode': r['returncode'], 'got_text': got,
                                  'chars': len(text) if got else 0})
             write_status(TASK_STATUS_PATH, 'running', {'completed_steps': i, 'total_steps': len(steps)})
