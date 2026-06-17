@@ -510,6 +510,11 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
         skill_dir = Path(os.path.expanduser('~/.openclaw/skills/deep-research'))
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / 'SKILL.md').write_text(DEEP_RESEARCH_SKILL, encoding='utf-8')
+        # Scope the agent to ONLY deep-research: the ~20 bundled skills otherwise inject ~8.9k tokens
+        # and overflow a small model's prompt. Best-effort (config shape varies by version); the large
+        # n_ctx is the safety net if this allowlist key isn't honored. check=False so it never aborts.
+        run(PATH_PREFIX + 'openclaw config set agents.defaults.skills \'["deep-research"]\'',
+            'openclaw_config.log', check=False, env=env, timeout=60)
         run(PATH_PREFIX + 'openclaw skills list', 'openclaw_skills.log', check=False, env=env, timeout=120)
     except Exception as exc:
         append(RESULTS / 'error.log', f"[{now()}] skill install {exc!r}\n")

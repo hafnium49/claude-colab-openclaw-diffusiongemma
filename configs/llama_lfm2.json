@@ -13,7 +13,7 @@
     "llama_cpp": {
       "wheel": "llama-cpp-python[server]==0.3.30",
       "wheel_index": "https://abetlen.github.io/llama-cpp-python/whl/cu124",
-      "server_args": ["--n_gpu_layers", "99", "--n_ctx", "16384"]
+      "server_args": ["--n_gpu_layers", "99", "--n_ctx", "32768"]
     }
   },
   "openclaw": {
@@ -23,8 +23,8 @@
     "compat": {
       "requiresStringContent": true,
       "supportsTools": false,
-      "maxTokens": 2048,
-      "contextWindow": 16384
+      "maxTokens": 1024,
+      "contextWindow": 32768
     }
   }
 }
