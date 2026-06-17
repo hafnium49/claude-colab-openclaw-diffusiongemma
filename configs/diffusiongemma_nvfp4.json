@@ -23,22 +23,23 @@
       "--max-num-seqs",
       "1",
       "--gpu-memory-utilization",
-      "0.85",
-      "--generation-config",
-      "vllm",
+      "0.90",
       "--hf-overrides",
       "{\"diffusion_sampler\":\"entropy_bound\",\"diffusion_entropy_bound\":0.1}",
-      "--diffusion-config",
-      "{\"canvas_length\":256}",
-      "--enable-chunked-prefill"
+      "--default-chat-template-kwargs",
+      "{\"enable_thinking\":true}"
     ]
   },
   "openclaw": {
     "install": true,
+    "provider_id": "vllm",
     "gateway_port": 18789,
     "gateway_bind": "loopback",
-    "gateway_token": "colab-openclaw-local-token",
-    "vllm_api_key": "vllm-local",
-    "provider_timeout_seconds": 600
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": false,
+      "maxTokens": 512,
+      "contextWindow": 4096
+    }
   }
 }
