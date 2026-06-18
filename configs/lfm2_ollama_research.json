@@ -1,0 +1,54 @@
+{
+  "_comment": "Bounded-context DEEP RESEARCH verify: LFM2.5-8B-A1B via Ollama + OpenClaw's documented best practice for tool-heavy long-horizon research (openclaw.context). Deliberately keeps contextWindow at 32768 (the size that overflowed at ~3 tool turns WITHOUT these settings) to prove the fix: openclaw.context turns on contextPruning (OFF by default for non-Anthropic backends — trims old tool results from the in-memory prompt), lowers the reserveTokensFloor (reclaims the 'contextWindow/2' budget), enables midTurnPrecheck (compacts after a tool result, before the next call — pre-empts the 'Already compacted' bug), caps per-tool-result chars, and points memory_search at a no-key BM25 provider. Run with examples/web_research_deep.json (6 steps / 4 accumulating web searches). See memory: openclaw-context-bestpractice.",
+  "model": {
+    "id": "lfm2.5:8b"
+  },
+  "serve": {
+    "backend": "ollama",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 900,
+    "ollama": {
+      "num_ctx": 32768,
+      "install_timeout_seconds": 900,
+      "download_timeout_seconds": 1800
+    }
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": true,
+      "maxTokens": 2048,
+      "contextWindow": 32768
+    },
+    "web": {
+      "enabled": true,
+      "provider": "brave",
+      "plugin_package": "@openclaw/brave-plugin",
+      "max_results": 3,
+      "code_mode": false,
+      "lean_workspace": true
+    },
+    "identity": {
+      "name": "Hiroki"
+    },
+    "context": {
+      "enabled": true,
+      "pruning": {
+        "enabled": true,
+        "mode": "cache-ttl",
+        "ttl": "5m",
+        "min_prunable_tool_chars": 4000
+      },
+      "reserve_tokens_floor": 0,
+      "reserve_tokens": 4096,
+      "compaction_mode": "safeguard",
+      "mid_turn_precheck": true,
+      "tool_result_max_chars": 6000,
+      "memory_search_provider": "none"
+    }
+  }
+}

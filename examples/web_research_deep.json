@@ -1,0 +1,17 @@
+{
+  "_comment": "STRESS TEST for bounded-context deep research: 4 ACCUMULATING web searches + a synthesis, all in ONE shared session — the exact scenario that overflowed / hit 'Already compacted' at ~3-5 tool turns BEFORE OpenClaw's contextPruning was enabled. With configs/lfm2_ollama_research.json (openclaw.context: pruning + lowered reserve + midTurnPrecheck) it should complete all 6 steps cleanly. Step 1 also checks USER.md identity; the final step references all earlier findings (tests retention through pruning).",
+  "mode": "research",
+  "transport": "local",
+  "timeout_seconds": 3600,
+  "step_timeout_seconds": 480,
+  "topic": "Latest stable versions of major programming languages",
+  "session_key": "deep-research",
+  "steps": [
+    "What is my name? Answer in one short sentence, addressing me by name.",
+    "Use your web_search tool to find the current latest stable version of Python from python.org. Give the exact version number and the source URL.",
+    "Use web_search to find the current latest LTS version of Node.js from nodejs.org. Give the exact version number and the source URL.",
+    "Use web_search to find the current latest stable version of Go from go.dev. Give the exact version number and the source URL.",
+    "Use web_search to find the current latest stable version of Rust from rust-lang.org. Give the exact version number and the source URL.",
+    "Synthesize ALL of the above into one Markdown table with columns: Language | Latest version | Source URL. Include Python, Node.js, Go, and Rust."
+  ]
+}

@@ -556,7 +556,10 @@ You are running a multi-step research task. The steps share one session, so you 
    instead of inventing specifics.
 3. Stay strictly on the topic of the request. Do not drift into unrelated domains or generic filler.
 4. Keep each answer focused and well-structured (short headers, tight bullets). No padding.
-5. For a final synthesis step, integrate ALL earlier findings from this session into a concise
+5. Keep context lean: NEVER paste full web-page text into an answer — extract the few facts that
+   matter plus the source URL. If you have notes/memory tools (`write`/`memory_search`/`memory_get`),
+   write each distilled finding to your notes and recall it by query later instead of restating it.
+6. For a final synthesis step, integrate ALL earlier findings from this session into a concise
    executive summary with a clear, actionable recommendation.
 """
 
@@ -576,6 +579,9 @@ You are an autonomous research assistant. Be concise, concrete, and cite sources
   prices, or facts you are not certain of, CALL `web_search` FIRST, then cite the source URL(s).
 - Never claim you lack internet access when a web tool is available — use it.
 - Build on earlier turns in this session; do not ask the user to repeat themselves.
+- Keep context lean: do NOT paste full fetched-page text into your reply — extract only the few
+  facts that matter plus the source URL. If you have `write`/`memory` tools, jot the distilled
+  finding to your notes and recall earlier findings with `memory_search` instead of restating them.
 """
 
 
@@ -672,6 +678,53 @@ def _configure_web_and_identity(ocfg: Dict[str, Any], env: Dict[str, str]):
     return web_applied, seeded
 
 
+def _configure_context(ocfg: Dict[str, Any], env: Dict[str, str]):
+    """Apply OpenClaw's BOUNDED-CONTEXT settings for long-horizon tool-heavy research (gated by
+    openclaw.context so smoke/legacy runs are untouched). OpenClaw's documented best practice — NOT
+    'raise the window':
+      - contextPruning is OFF by default for non-Anthropic backends (our vLLM/Ollama/llama.cpp) —
+        turning it ON trims/drops OLD tool results (3-5k-tok web pages) from the in-memory prompt.
+      - the 'contextWindow/2' budget is reserveTokensFloor eaten from a small window → LOWER it.
+      - midTurnPrecheck compacts AFTER a tool result, BEFORE the next call (pre-empts 'Already compacted').
+      - cap per-tool-result size; point memory_search at a no-key provider for the loopback Colab.
+    All best-effort (check=False); openclaw_context.log captures `config get` so the verify sees what stored.
+    """
+    ctx = ocfg.get('context') or {}
+    applied: List[str] = []
+    if not ctx.get('enabled'):
+        return applied
+    sets = []
+    pr = ctx.get('pruning') or {}
+    if pr.get('enabled', True):
+        sets += [
+            ('agents.defaults.contextPruning.mode', str(pr.get('mode', 'cache-ttl'))),
+            ('agents.defaults.contextPruning.ttl', str(pr.get('ttl', '5m'))),
+            ('agents.defaults.contextPruning.minPrunableToolChars', str(int(pr.get('min_prunable_tool_chars', 8000)))),
+        ]
+    if 'reserve_tokens_floor' in ctx:
+        sets.append(('agents.defaults.compaction.reserveTokensFloor', str(int(ctx['reserve_tokens_floor']))))
+    if 'reserve_tokens' in ctx:
+        sets.append(('agents.defaults.compaction.reserveTokens', str(int(ctx['reserve_tokens']))))
+    sets += [
+        ('agents.defaults.compaction.mode', str(ctx.get('compaction_mode', 'safeguard'))),
+        ('agents.defaults.compaction.midTurnPrecheck.enabled', 'true' if ctx.get('mid_turn_precheck', True) else 'false'),
+    ]
+    if 'tool_result_max_chars' in ctx:
+        sets.append(('agents.defaults.contextLimits.toolResultMaxChars', str(int(ctx['tool_result_max_chars']))))
+    if ctx.get('memory_search_provider'):
+        sets.append(('agents.defaults.memorySearch.provider', str(ctx['memory_search_provider'])))
+    for key, val in sets:
+        run(PATH_PREFIX + f"openclaw config set {shlex.quote(key)} {shlex.quote(val)}",
+            'openclaw_context.log', check=False, env=env, timeout=60)
+        applied.append(key)
+    for key in ('agents.defaults.contextPruning', 'agents.defaults.compaction.reserveTokensFloor',
+                'agents.defaults.compaction.reserveTokens', 'agents.defaults.compaction.midTurnPrecheck.enabled',
+                'agents.defaults.contextLimits.toolResultMaxChars', 'agents.defaults.memorySearch.provider'):
+        run(PATH_PREFIX + f"openclaw config get {shlex.quote(key)}",
+            'openclaw_context.log', check=False, env=env, timeout=60)
+    return applied
+
+
 def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> Dict[str, Any]:
     ocfg = config.get('openclaw', {})
     model_id = config['model']['id']
@@ -734,12 +787,14 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
 
     # Optional deep-research wiring (web search + identity), gated by config (off for smoke/legacy).
     web_applied, identity_seeded = _configure_web_and_identity(ocfg, env)
+    # Optional bounded-context settings (pruning/reserve/compaction) for long-horizon research.
+    context_applied = _configure_context(ocfg, env)
 
     run(PATH_PREFIX + 'openclaw config file', 'openclaw_config.log', check=False, env=env, timeout=60)
     run(PATH_PREFIX + 'openclaw models list --json', 'openclaw_models.log', check=False, env=env, timeout=120)
     return {'model_ref': model_ref, 'provider_id': provider_id, 'gateway_port': gateway_port,
             'gateway_token_set': bool(env['OPENCLAW_GATEWAY_TOKEN']), 'compat_applied': applied,
-            'web_applied': web_applied, 'identity_seeded': identity_seeded}
+            'web_applied': web_applied, 'identity_seeded': identity_seeded, 'context_applied': context_applied}
 
 
 def start_openclaw_gateway(config: Dict[str, Any]) -> Dict[str, Any]:
