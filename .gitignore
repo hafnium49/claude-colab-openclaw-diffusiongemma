@@ -3,5 +3,8 @@ runs/
 __pycache__/
 .DS_Store
 
+# Forwarded-secrets file (allowlist, e.g. BRAVE_API_KEY) — never commit
+ocdg_secrets.json
+
 # Windows/WSL alternate-data-stream artifacts
 *:Zone.Identifier

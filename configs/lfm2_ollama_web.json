@@ -1,0 +1,39 @@
+{
+  "_comment": "WORKAROUND for LFM2.5 tool calling on a fee-free T4: serve via OLLAMA instead of llama-cpp-python. Ollama ships a prebuilt CUDA runner (no compile), tracks a current llama.cpp (so it has the LFM2.5 tool-parser fix PR #24178), and its OpenAI-compatible /v1 endpoint returns STRUCTURED tool_calls via Ollama's own template parser — which llama-cpp-python's server cannot do for LFM2's Pythonic <|tool_call_start|>[...]<|tool_call_end|> format. The ollama library tags lfm2.5:8b (= LFM2.5-8B-A1B) with the 'tools' capability. compat.supportsTools=true uses the native tool route. OLLAMA_CONTEXT_LENGTH/num_ctx is raised because Ollama caps context small by default. BRAVE_API_KEY is forwarded from ~/.env by the launcher. Run with examples/web_verify_task.json.",
+  "model": {
+    "id": "lfm2.5:8b"
+  },
+  "serve": {
+    "backend": "ollama",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 900,
+    "ollama": {
+      "num_ctx": 65536,
+      "install_timeout_seconds": 900,
+      "download_timeout_seconds": 1800
+    }
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": true,
+      "maxTokens": 2048,
+      "contextWindow": 65536
+    },
+    "web": {
+      "enabled": true,
+      "provider": "brave",
+      "plugin_package": "@openclaw/brave-plugin",
+      "max_results": 3,
+      "code_mode": false,
+      "lean_workspace": true
+    },
+    "identity": {
+      "name": "Hiroki"
+    }
+  }
+}

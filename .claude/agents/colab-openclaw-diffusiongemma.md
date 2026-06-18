@@ -166,3 +166,32 @@ llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). See `docs/t4_llama_cpp_serving.md
   `from colab_cli.common import state; from colab_cli.auth import AuthProvider;
   state.auth_provider=AuthProvider.ADC; [state.client.unassign(a.endpoint) for a in
   state.client.list_assignments()]` (run with the colab-cli venv python).
+
+## 2026-06-18 — Live web search for deep research WORKS (Ollama backend)
+
+- **OpenClaw now executes REAL web search** (`web_search`/`web_fetch` → Brave) on a fee-free T4. Run:
+  `--config configs/lfm2_ollama_web.json --task examples/web_verify_task.json`. Validated: the agent
+  did multi-step search→fetch, returned cited python.org URLs + the live version, and answered by name
+  ("Your name is Hiroki").
+- **Why it was broken:** `python -m llama_cpp.server` (llama-cpp-python) has NO tool parser for LFM2.5's
+  Pythonic `<|tool_call_start|>[...]<|tool_call_end|>` calls — it returns them as plain TEXT, so OpenClaw
+  never executes them. Native `llama-server --jinja` parses them but needs llama.cpp PR #24178
+  (2026-06-05) and there is NO prebuilt Linux-CUDA binary that recent (oobabooga's newest is pre-fix;
+  ggml-org ships Linux cpu/vulkan/sycl/rocm but CUDA only for Windows). **Fix = serve via OLLAMA**
+  (`serve.backend: "ollama"`): prebuilt CUDA (no compile), current llama.cpp, its own template parser →
+  OpenAI `/v1` returns STRUCTURED `tool_calls`.
+- **`ollama` backend** (`install_ollama`/`start_ollama`): `apt-get install zstd` FIRST (Colab lacks it;
+  use `-o DPkg::Lock::Timeout=300` — the OpenClaw bg-installer holds the apt lock) → `ollama.com/install.sh`
+  → `OLLAMA_HOST=127.0.0.1:8000 OLLAMA_CONTEXT_LENGTH=<n> ollama serve` → `ollama pull lfm2.5:8b`. Model
+  id is an Ollama tag (`lfm2.5:8b` = LFM2.5-8B-A1B, "tools" capability). `compat.supportsTools:true`.
+  Raise `num_ctx`/`contextWindow` (65536) — OpenClaw's prompt budget is contextWindow/2 and multi-step
+  tool results accumulate in the shared session (overflowed at 32768).
+- **Web/identity wiring is config-gated** (`_configure_web_and_identity`): `openclaw.web` installs the
+  EXTERNAL brave plugin (`openclaw plugins install @openclaw/brave-plugin`), trusts it (`plugins.allow`),
+  enables `tools.web.*`, sets `tools.profile coding`; `openclaw.identity.name` seeds workspace `USER.md`
+  (injected every agent session — the "remember my name" fix). `lean_workspace` trims the 8 KB default
+  AGENTS.md so a small model doesn't overflow.
+- **Secrets:** `BRAVE_API_KEY` is forwarded from the controller's `~/.env` via a strict ALLOWLIST
+  (launcher → `/content/ocdg_secrets.json` → `oc_env`), NEVER the user's `OPENCLAW_GATEWAY_TOKEN`. **T4
+  default is now LFM2.5** (`llama_lfm2.json`); Qwen3.5-9B (hybrid-SSM) crashes llama.cpp mid-generation
+  on a T4 — don't use it there.

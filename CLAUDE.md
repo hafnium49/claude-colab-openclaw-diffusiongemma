@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Claude Code-native scaffold that controls a single Google Colab GPU runtime through the **Google Colab CLI** (`colab`). Inside that one Colab runtime it stands up a **self-hosted, OpenAI-compatible LLM** (config-driven backend), points an **OpenClaw** Gateway at it on loopback, runs a headless prompt **or an autonomous multi-step task** (e.g. deep research) through OpenClaw's inference CLI, and downloads a single result zip. The **default backend is `llama_cpp`** serving `Qwen3.5-9B` (4-bit GGUF) — the validated, **fee-free** path that runs on a free Colab **T4** (vLLM can't serve ≥3B there; see `docs/t4_llama_cpp_serving.md`). The original `vllm` backend for `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4` is kept for an **L4** (`--gpu L4 --config configs/diffusiongemma_nvfp4.json`). The local machine is only the controller; the Colab runtime is a temporary, ephemeral job executor. Everything runs on loopback inside Colab — no public OpenClaw tunnel in the default workflow.
+A Claude Code-native scaffold that controls a single Google Colab GPU runtime through the **Google Colab CLI** (`colab`). Inside that one Colab runtime it stands up a **self-hosted, OpenAI-compatible LLM** (config-driven backend), points an **OpenClaw** Gateway at it on loopback, runs a headless prompt **or an autonomous multi-step task** (e.g. deep research) through OpenClaw's inference CLI, and downloads a single result zip. The **default backend is `llama_cpp`** serving **LFM2.5-8B-A1B** (4-bit GGUF) — the validated, **fee-free** path on a free Colab **T4** (~134 tok/s; vLLM can't serve ≥3B there; see `docs/t4_llama_cpp_serving.md`). For **deep research with live web search**, the **`ollama`** backend (`configs/lfm2_ollama_web.json`) serves LFM2.5 so OpenClaw gets structured `tool_calls` and actually runs `web_search`/`web_fetch` against Brave (validated 2026-06-18). (Qwen3.5-9B was the old default but its hybrid-SSM build crashes llama.cpp on a T4.) The original `vllm` backend for `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4` is kept for an **L4** (`--gpu L4 --config configs/diffusiongemma_nvfp4.json`). The local machine is only the controller; the Colab runtime is a temporary, ephemeral job executor. Everything runs on loopback inside Colab — no public OpenClaw tunnel in the default workflow.
 
 This is pure stdlib Python + bash. Locally it needs only `python` and the `colab` CLI (`pip install google-colab-cli`); the LLM backend (llama.cpp or vLLM) and OpenClaw are installed *inside* Colab at runtime.
 
@@ -20,13 +20,19 @@ bash -n bin/colab_openclaw_diffusiongemma.sh
 bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
   --config configs/llama_smoke.json --task examples/prompt_task.json --out ./runs/smoke
 
-# Validated default: Qwen3.5-9B (4-bit GGUF) on a T4, single prompt (fee-free, self-hosted)
+# Validated default: LFM2.5-8B-A1B (4-bit GGUF) on a T4, single prompt (fee-free, self-hosted)
 bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
-  --config configs/llama_qwen9b.json --task examples/prompt_task.json --out ./runs/llama9b
+  --config configs/llama_lfm2.json --task examples/prompt_task.json --out ./runs/lfm2
+
+# Deep research with LIVE web search (Ollama backend -> structured tool_calls -> real Brave search).
+# Validated 2026-06-18: agent runs web_search/web_fetch, returns cited URLs, remembers the user.
+# Needs BRAVE_API_KEY in ~/.env (the launcher forwards it into Colab).
+bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
+  --config configs/lfm2_ollama_web.json --task examples/web_verify_task.json --out ./runs/research
 
 # Autonomous, human-free deep-research run (detached + polled multi-step task)
 bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
-  --config configs/llama_qwen9b.json --task examples/research_task.json --out ./runs/research
+  --config configs/llama_lfm2.json --task examples/research_task.json --out ./runs/research
 
 # Original DiffusionGemma target (vLLM backend; needs an L4 entitlement)
 bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
@@ -59,7 +65,7 @@ A `status` action also exists for ad-hoc health checks but is not part of the de
 
 ### Config and task contract
 
-- **Config JSON** (`configs/*.json`) drives everything model-side via a `serve` block: `serve.backend` (`llama_cpp` | `vllm`), `serve.host/port/startup_timeout_seconds`, and a backend sub-block — `serve.llama_cpp.{wheel, wheel_index, server_args}` with `model.{id, gguf_repo, gguf_file}`, **or** legacy top-level `vllm.{serve_args, install_command, …}` (the DiffusionGemma config's `serve_args` carry diffusion-specific flags `--diffusion-config`/`--hf-overrides`/`--generation-config vllm`). `openclaw.compat.{requiresStringContent, supportsTools, maxTokens, contextWindow}` supplies the infer-fixes. Configs: `llama_qwen9b.json` (validated default), `llama_smoke.json` (cheap 0.5B), `diffusiongemma_nvfp4.json` (vLLM/L4), `smoke_test_tiny.json` (vLLM 0.5B).
+- **Config JSON** (`configs/*.json`) drives everything model-side via a `serve` block: `serve.backend` (`llama_cpp` | `vllm` | `ollama`), `serve.host/port/startup_timeout_seconds`, and a backend sub-block — `serve.llama_cpp.{wheel, wheel_index, server_args}` with `model.{id, gguf_repo, gguf_file}`, **or** legacy top-level `vllm.{serve_args, install_command, …}` (the DiffusionGemma config's `serve_args` carry diffusion-specific flags `--diffusion-config`/`--hf-overrides`/`--generation-config vllm`). `openclaw.compat.{requiresStringContent, supportsTools, maxTokens, contextWindow}` supplies the infer-fixes. For the `ollama` backend: `serve.ollama.{num_ctx, install_timeout_seconds, download_timeout_seconds}` with `model.id` an Ollama tag (e.g. `lfm2.5:8b`). The web-search/identity wiring is config-driven too: `openclaw.web.{enabled, provider, plugin_package, max_results, code_mode, lean_workspace}` (installs the brave plugin, enables web tools, trims the workspace) and `openclaw.identity.{name, email?}` (seeds `~/.openclaw/workspace/USER.md`). Configs: `llama_lfm2.json` (validated T4 default — LFM2.5-8B-A1B), `lfm2_ollama_web.json` (T4 deep-research with live Brave web search via `ollama`), `llama_qwen9b.json` (alt; Qwen3.5-9B is unstable under llama.cpp on T4), `llama_smoke.json` (cheap 0.5B), `diffusiongemma_nvfp4.json` (vLLM/L4), `smoke_test_tiny.json` (vLLM 0.5B).
 - **Task JSON** drives the request: `prompt`, `transport` (`gateway` | `local` — `local` = direct infer, no `--gateway`, the robust path), `timeout_seconds`. For autonomous runs set `mode: "research"` with a `steps` list (+ `topic`, optional `step_timeout_seconds`); see `examples/research_task.json`.
 
 ### Conventions & gotchas

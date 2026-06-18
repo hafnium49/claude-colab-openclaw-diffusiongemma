@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Defaults target the VALIDATED, fee-free path: llama.cpp serves Qwen3.5-9B (4-bit GGUF) on a
-# Colab T4, OpenClaw points at it on loopback. For the original DiffusionGemma target, pass
-# `--gpu L4 --config configs/diffusiongemma_nvfp4.json` (needs an L4 entitlement).
+# Defaults target the VALIDATED, fee-free path: llama.cpp serves LFM2.5-8B-A1B (4-bit GGUF) on a
+# Colab T4, OpenClaw points at it on loopback. For deep research with LIVE web search, use the
+# Ollama backend: `--config configs/lfm2_ollama_web.json` (Ollama returns structured tool_calls so
+# OpenClaw actually executes web_search/web_fetch; needs BRAVE_API_KEY forwarded from ~/.env). For
+# the DiffusionGemma target, pass `--gpu L4 --config configs/diffusiongemma_nvfp4.json` (L4 entitlement).
 SESSION="openclaw-dg"
 GPU="T4"
-CONFIG="configs/llama_qwen9b.json"
+CONFIG="configs/llama_lfm2.json"
 TASK="examples/prompt_task.json"
 OUT_DIR="./runs/openclaw-dg"
 KEEP_SESSION=0
@@ -30,12 +32,17 @@ Options:
   -h, --help          Show help
 
 Examples:
-  # Validated llama.cpp / Qwen3.5-9B smoke (single prompt) on a T4:
-  bash bin/colab_openclaw_diffusiongemma.sh --config configs/llama_qwen9b.json \
-    --task examples/prompt_task.json --out ./runs/llama9b
+  # Validated llama.cpp / LFM2.5-8B-A1B smoke (single prompt) on a T4:
+  bash bin/colab_openclaw_diffusiongemma.sh --config configs/llama_lfm2.json \
+    --task examples/prompt_task.json --out ./runs/lfm2
+
+  # Deep research with LIVE web search (Ollama backend -> structured tool_calls -> real Brave search):
+  #   put BRAVE_API_KEY in ~/.env first; the launcher forwards it into Colab.
+  bash bin/colab_openclaw_diffusiongemma.sh --config configs/lfm2_ollama_web.json \
+    --task examples/web_verify_task.json --out ./runs/research
 
   # Autonomous, human-free deep-research run (detached + polled):
-  bash bin/colab_openclaw_diffusiongemma.sh --config configs/llama_qwen9b.json \
+  bash bin/colab_openclaw_diffusiongemma.sh --config configs/llama_lfm2.json \
     --task examples/research_task.json --out ./runs/research
 
   # Cheap orchestration smoke (0.5B GGUF):
@@ -187,6 +194,46 @@ run colab status -s "$SESSION"
 run colab upload -s "$SESSION" "$REMOTE_SCRIPT" /content/remote_colab_openclaw_diffusiongemma.py
 run colab upload -s "$SESSION" "$CONFIG" /content/ocdg_config.json
 run colab upload -s "$SESSION" "$TASK" /content/ocdg_task.json
+
+# Forward ONLY an allowlist of secrets into the Colab VM (uploaded as /content/ocdg_secrets.json,
+# loaded into the remote's env). Sourced from the live env first, else a single grep of ~/.env (the
+# value is never printed/teed). DELIBERATELY EXCLUDES OPENCLAW_GATEWAY_TOKEN — ~/.env's is the
+# user's real /sandbox/.openclaw token; the Colab gateway mints its own loopback token. Only runs
+# when the config enables web search. Override list with OCDG_FORWARD_KEYS="A B"; file with OCDG_ENV_FILE.
+ENV_FILE="${OCDG_ENV_FILE:-$HOME/.env}"
+FORWARD_KEYS="${OCDG_FORWARD_KEYS-BRAVE_API_KEY}"
+forward_secrets() {
+  [[ -n "$FORWARD_KEYS" ]] || return 0
+  local tmp k v found=0
+  tmp=$(mktemp); chmod 600 "$tmp"; printf '{' > "$tmp"
+  for k in $FORWARD_KEYS; do
+    v="${!k:-}"                                    # live env wins
+    if [[ -z "$v" && -f "$ENV_FILE" ]]; then       # else pull exactly this one var from the env file
+      v=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${k}=" "$ENV_FILE" 2>/dev/null | tail -1 \
+          | sed -E "s/^[[:space:]]*(export[[:space:]]+)?${k}=//; s/^\"(.*)\"$/\1/; s/^'(.*)'\$/\1/" || true)
+    fi
+    if [[ -n "$v" ]]; then
+      [[ "$found" -eq 1 ]] && printf ',' >> "$tmp"
+      v="${v//\\/\\\\}"; v="${v//\"/\\\"}"          # JSON-escape backslashes and quotes
+      printf '"%s":"%s"' "$k" "$v" >> "$tmp"
+      found=1
+    fi
+  done
+  printf '}' >> "$tmp"
+  if [[ "$found" -eq 1 ]]; then
+    # Upload WITHOUT the `run` wrapper so the value is never tee'd to the log (paths-only is fine).
+    if "$COLAB_BIN" --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" upload -s "$SESSION" "$tmp" /content/ocdg_secrets.json >/dev/null 2>&1; then
+      echo "[secrets] forwarded [$FORWARD_KEYS] into Colab (values not logged)" | tee -a "$LOG"
+    else
+      echo "[secrets] upload failed — continuing without forwarded secrets" | tee -a "$LOG"
+    fi
+  else
+    echo "[secrets] none of [$FORWARD_KEYS] found in env or $ENV_FILE — skipping" | tee -a "$LOG"
+  fi
+  rm -f "$tmp"
+}
+WEB_ENABLED=$(python -c "import json,sys; print('1' if ((json.load(open(sys.argv[1])).get('openclaw',{}) or {}).get('web',{}) or {}).get('enabled') else '0')" "$CONFIG" 2>/dev/null || echo 0)
+if [[ "$WEB_ENABLED" == "1" ]]; then forward_secrets; fi
 
 # Phases are best-effort from here: always reach the download + teardown below even if a phase
 # fails or the runtime is reclaimed mid-flight.

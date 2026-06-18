@@ -159,3 +159,25 @@ recipe in `docs/t4_llama_cpp_serving.md`.
   spins a SECOND same-named runtime (duplicate billing). Use it only for manual inspection; kill
   orphaned/colliding sessions via the colab-cli client `unassign` API (`colab stop -s` can't reach
   store-less sessions). Always tear down promptly.
+
+## 2026-06-18 — Live web search works (Ollama backend)
+
+- **OpenClaw now executes REAL web search** (`web_search`/`web_fetch` → Brave) on a fee-free T4:
+  `--config configs/lfm2_ollama_web.json --task examples/web_verify_task.json`. Validated: multi-step
+  search→fetch, cited python.org URLs, and "Your name is Hiroki".
+- **Why the llama.cpp path couldn't:** `python -m llama_cpp.server` has no parser for LFM2.5's Pythonic
+  `<|tool_call_start|>[...]<|tool_call_end|>` tool calls → returns them as TEXT, never executed. Native
+  `llama-server --jinja` needs llama.cpp PR #24178 (2026-06-05) and no prebuilt Linux-CUDA binary that
+  recent exists. **Fix = `serve.backend: "ollama"`** — prebuilt CUDA, current llama.cpp, its own template
+  parser → OpenAI `/v1` returns STRUCTURED `tool_calls`.
+- **`ollama` backend:** install needs `apt-get install zstd` first (Colab lacks it; `-o DPkg::Lock::Timeout=300`
+  because the OpenClaw bg-installer holds the apt lock), then `ollama.com/install.sh`,
+  `OLLAMA_HOST=127.0.0.1:8000 OLLAMA_CONTEXT_LENGTH=<n> ollama serve`, `ollama pull lfm2.5:8b`. Model id =
+  Ollama tag `lfm2.5:8b` (LFM2.5-8B-A1B, "tools"); `compat.supportsTools:true`; raise `num_ctx`/`contextWindow`
+  to 65536 (budget = contextWindow/2; tool results accumulate in the shared session).
+- **Config-gated wiring** (`_configure_web_and_identity`): `openclaw.web` installs the external brave plugin
+  (`openclaw plugins install @openclaw/brave-plugin`), trusts it via `plugins.allow`, enables `tools.web.*`,
+  `tools.profile coding`; `openclaw.identity.name` seeds workspace `USER.md` (per-session identity = the
+  "remember my name" fix); `lean_workspace` trims the default 8 KB AGENTS.md. `BRAVE_API_KEY` is forwarded
+  from `~/.env` via a strict ALLOWLIST (NEVER the user's `OPENCLAW_GATEWAY_TOKEN`). **T4 default is now
+  LFM2.5** (`llama_lfm2.json`); Qwen3.5-9B (hybrid-SSM) crashes llama.cpp on a T4.

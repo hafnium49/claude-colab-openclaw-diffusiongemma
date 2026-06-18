@@ -21,9 +21,11 @@ required = [
     'configs/llama_qwen9b.json',
     'configs/llama_smoke.json',
     'configs/llama_lfm2.json',
+    'configs/lfm2_ollama_web.json',
     'configs/colab_ai_gemini.json',
     'examples/prompt_task.json',
     'examples/research_task.json',
+    'examples/web_verify_task.json',
     'notebooks/_gen_notebook.py',
     'notebooks/openclaw_chat_colab.ipynb',
     'notebooks/_gen_colab_ai_notebook.py',
@@ -38,9 +40,11 @@ for rel in required:
         raise SystemExit(f'Missing required file: {rel}')
 
 for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json',
-            'configs/llama_qwen9b.json', 'configs/llama_smoke.json', 'configs/llama_lfm2.json',
+            'configs/llama_qwen9b.json',
+            'configs/llama_smoke.json', 'configs/llama_lfm2.json',
+            'configs/lfm2_ollama_web.json',
             'configs/colab_ai_gemini.json',
-            'examples/prompt_task.json', 'examples/research_task.json',
+            'examples/prompt_task.json', 'examples/research_task.json', 'examples/web_verify_task.json',
             'notebooks/openclaw_chat_colab.ipynb', 'notebooks/openclaw_colab_ai.ipynb',
             'notebooks/openclaw_diffusiongemma_colab.ipynb']:
     with (ROOT / rel).open('r', encoding='utf-8') as f:

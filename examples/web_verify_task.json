@@ -1,0 +1,14 @@
+{
+  "_comment": "VERIFICATION task for OpenClaw web search (Brave) + name memory. mode=research runs the detached agent worker (openclaw agent --local --session-key, the tool-using path). Step 1 tests USER.md identity injection (no search). Steps 2-3 FORCE a live web_search and require a pasted source URL, so the run logs + openclaw_state/sessions/*.jsonl in the result zip prove the tool actually fired (vs answering from weights). The 'WEB SEARCH UNAVAILABLE' escape gives a clean negative signal. Use with configs/llama_qwen9b_web.json.",
+  "mode": "research",
+  "transport": "local",
+  "timeout_seconds": 2400,
+  "step_timeout_seconds": 480,
+  "topic": "OpenClaw web-search + identity verification",
+  "session_key": "web-verify",
+  "steps": [
+    "What is my name? Answer in one short sentence, addressing me by name.",
+    "Use your web_search tool to find the current latest stable version of Python from an official source (python.org). State the exact version number AND paste the source URL you retrieved it from. If you cannot run a web search, reply exactly 'WEB SEARCH UNAVAILABLE' and briefly explain why.",
+    "Use web_search to find one news item from the last 14 days about NVIDIA. Give the headline and the source URL. If no web tool is available, reply exactly 'WEB SEARCH UNAVAILABLE'."
+  ]
+}

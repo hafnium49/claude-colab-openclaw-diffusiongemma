@@ -40,6 +40,11 @@ TASK_PATH = BASE / 'ocdg_task.json'
 ZIP_PATH = BASE / 'openclaw_diffusiongemma_results.zip'
 SELF_PATH = BASE / 'remote_colab_openclaw_diffusiongemma.py'
 GGUF_DIR = BASE / 'gguf'
+SECRETS_PATH = BASE / 'ocdg_secrets.json'  # launcher-forwarded secrets (allowlist), loaded into env
+
+# Secrets the launcher may forward into the VM. ALLOWLIST — never apply anything outside this set,
+# and NEVER the user's own OPENCLAW_GATEWAY_TOKEN (the Colab gateway mints its own loopback token).
+FORWARDED_SECRET_KEYS = ('BRAVE_API_KEY',)
 
 # (status_file, done_file) per detached phase.
 STATUS_PATH = RESULTS / 'bootstrap_status.json'
@@ -216,18 +221,47 @@ def extract_agent_text(raw: str) -> Optional[str]:
     return best
 
 
+def load_forwarded_secrets() -> None:
+    """Load launcher-forwarded secrets (ALLOWLIST only) into os.environ.
+
+    The launcher uploads /content/ocdg_secrets.json with a minimal allowlist (e.g. BRAVE_API_KEY for
+    web search). Every phase/worker is a fresh process, so we re-load here at each entrypoint. We
+    apply ONLY keys in FORWARDED_SECRET_KEYS — never the user's OPENCLAW_GATEWAY_TOKEN — and the file
+    lives OUTSIDE ocdg_results/ so it is never bundled into the downloaded zip. Best-effort: a
+    missing/malformed file must not crash a phase.
+    """
+    try:
+        if not SECRETS_PATH.exists():
+            return
+        data = json.loads(SECRETS_PATH.read_text(encoding='utf-8'))
+        for key in FORWARDED_SECRET_KEYS:
+            val = data.get(key)
+            if isinstance(val, str) and val:
+                os.environ[key] = val
+    except Exception:
+        pass
+
+
 def oc_env(config: Dict[str, Any]) -> Dict[str, str]:
-    """Resolve the OpenClaw gateway token + provider api key.
+    """Resolve the OpenClaw gateway token + provider api key (+ forwarded web-search keys).
 
     Each `colab exec` is a fresh process, so later (detached) phases must re-derive these from
     the SAME source as configure_openclaw(): env first (a real Colab secret wins), then the
     config's openclaw.{gateway_token,vllm_api_key}, then a loopback default.
     """
     ocfg = config.get('openclaw', {})
-    return {
+    env = {
         'OPENCLAW_GATEWAY_TOKEN': os.environ.get('OPENCLAW_GATEWAY_TOKEN') or ocfg.get('gateway_token') or 'colab-openclaw-local-token',
         'VLLM_API_KEY': os.environ.get('VLLM_API_KEY') or ocfg.get('vllm_api_key') or 'vllm-local',
     }
+    # Forward web-search provider keys (allowlist) into the OpenClaw/gateway PROCESS env so the brave
+    # web_search plugin can read BRAVE_API_KEY (provider keys are blocked from workspace .env files).
+    # Only keys actually present are added; NEVER the user's own gateway token (loopback default above).
+    for key in FORWARDED_SECRET_KEYS:
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +470,48 @@ def start_colab_ai(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, An
             'backend': 'colab_ai', 'ai_model': ai_model}
 
 
+def install_ollama(scfg: Dict[str, Any]) -> None:
+    if not scfg.get('install', True):
+        return
+    ocfg = scfg.get('ollama', {})
+    # Ollama's installer extracts a zstd-compressed tarball; the Colab base image lacks `zstd`
+    # ("This version requires zstd for extraction"). apt here must (a) refresh a stale cache and
+    # (b) WAIT for the dpkg lock — the OpenClaw installer runs apt concurrently in the background, so
+    # DPkg::Lock::Timeout avoids an immediate "could not get lock" failure. Best-effort; `which zstd`
+    # logs the outcome.
+    run('(apt-get update -qq -o DPkg::Lock::Timeout=300 2>&1 || true); '
+        'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --fix-missing '
+        '-o DPkg::Lock::Timeout=300 zstd 2>&1; echo "zstd -> $(command -v zstd || echo MISSING)"',
+        'install.log', check=False, timeout=600)
+    # Official install script ships a PREBUILT CUDA runner (no compile) and tracks a current
+    # llama.cpp — so it serves LFM2.5 tool calls that llama-cpp-python's server can't (it returns
+    # structured OpenAI tool_calls via Ollama's own template parser). Idempotent.
+    run('curl -fsSL https://ollama.com/install.sh | sh', 'install.log',
+        check=True, timeout=int(ocfg.get('install_timeout_seconds', 900)))
+
+
+def start_ollama(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, Any]:
+    model_id = config['model']['id']            # an Ollama tag, e.g. 'lfm2.5:8b'
+    ocfg = scfg.get('ollama', {})
+    host, port = scfg['host'], scfg['port']
+    max_wait = scfg['startup_timeout_seconds']
+    num_ctx = int(ocfg.get('num_ctx', 32768))
+    # Bind the daemon to the project's loopback :8000 (NEVER :11434 default if it clashes), and set
+    # the default context (Ollama caps num_ctx small regardless of the model's max). OLLAMA_HOST is
+    # read by BOTH the daemon and the `ollama pull` client.
+    hostport = f'{host}:{port}'
+    env = {'OLLAMA_HOST': hostport, 'OLLAMA_CONTEXT_LENGTH': str(num_ctx)}
+    serve_cmd = (f"export OLLAMA_HOST={shlex.quote(hostport)}; export OLLAMA_CONTEXT_LENGTH={num_ctx}; "
+                 f"nohup ollama serve > {RESULTS}/serve.log 2>&1 & echo $! > {RESULTS}/serve.pid")
+    run(serve_cmd, 'serve_start.log', check=True, timeout=60, env=env)
+    # Wait for the daemon, pull the model (blocks until downloaded), then confirm the OpenAI endpoint.
+    wait_for_url(f'http://{host}:{port}/api/version', 120, 'serve_start.log')
+    run(f"export OLLAMA_HOST={shlex.quote(hostport)}; ollama pull {shlex.quote(model_id)}",
+        'ollama_pull.log', check=True, timeout=int(ocfg.get('download_timeout_seconds', 1800)), env=env)
+    ok = wait_for_url(f'http://{host}:{port}/v1/models', max_wait, 'serve_start.log')
+    return {'ok': ok, 'base_url': f'http://{host}:{port}/v1', 'model_id': model_id, 'backend': 'ollama'}
+
+
 def start_backend(config: Dict[str, Any]) -> Dict[str, Any]:
     scfg = serve_cfg(config)
     backend = scfg['backend']
@@ -448,6 +524,9 @@ def start_backend(config: Dict[str, Any]) -> Dict[str, Any]:
     if backend == 'vllm':
         install_vllm(scfg)
         return start_vllm(config, scfg)
+    if backend == 'ollama':
+        install_ollama(scfg)
+        return start_ollama(config, scfg)
     raise ValueError(f'Unknown serve backend: {backend}')
 
 
@@ -480,6 +559,117 @@ You are running a multi-step research task. The steps share one session, so you 
 5. For a final synthesis step, integrate ALL earlier findings from this session into a concise
    executive summary with a clear, actionable recommendation.
 """
+
+
+def _workspace_dir() -> Path:
+    return Path(os.path.expanduser(os.environ.get('OPENCLAW_WORKSPACE_DIR', '~/.openclaw/workspace')))
+
+
+# Lean AGENTS.md for small-context models: keeps the essential web-tool directive but drops the
+# ~8KB default (which alone overflowed an 8k window). OpenClaw's base system prompt still carries
+# the tool/protocol instructions; this only trims the workspace persona/project layer.
+LEAN_AGENTS_MD = """# AGENTS
+
+You are an autonomous research assistant. Be concise, concrete, and cite sources.
+
+- You have `web_search` and `web_fetch` tools. For anything about current events, versions,
+  prices, or facts you are not certain of, CALL `web_search` FIRST, then cite the source URL(s).
+- Never claim you lack internet access when a web tool is available — use it.
+- Build on earlier turns in this session; do not ask the user to repeat themselves.
+"""
+
+
+def _lean_workspace() -> None:
+    """Shrink the workspace bootstrap so it fits a small context: replace the verbose default
+    AGENTS.md with a lean one and BLANK the optional persona files (OpenClaw skips blank files)."""
+    try:
+        ws = _workspace_dir()
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / 'AGENTS.md').write_text(LEAN_AGENTS_MD, encoding='utf-8')
+        for name in ('SOUL.md', 'HEARTBEAT.md', 'IDENTITY.md'):
+            (ws / name).write_text('', encoding='utf-8')
+    except Exception as exc:
+        append(RESULTS / 'error.log', f"[{now()}] lean_workspace {exc!r}\n")
+
+
+def _configure_web_and_identity(ocfg: Dict[str, Any], env: Dict[str, str]):
+    """Optionally enable OpenClaw web tools (Brave) + seed the workspace USER.md identity.
+
+    Gated by config so smoke/legacy runs are untouched:
+      openclaw.web      -> {enabled, provider=brave, plugin_package, max_results, profile,
+                            code_mode (bool), lean_workspace (bool)}
+      openclaw.identity -> {name, email?, notes?}
+
+    Two routes to let the model reach web_search (pick via compat.supportsTools in the config):
+      - native tools : compat.supportsTools=true,  code_mode=false (tool-trained models, smaller prompt)
+      - codeMode     : compat.supportsTools=false, code_mode=true  (no native function-calling)
+    The brave provider is an EXTERNAL plugin in current OpenClaw, so it is INSTALLED before being
+    enabled/selected (else `tools.web.search.provider brave` -> "provider not available"). All
+    best-effort (check=False); openclaw_web.log captures `config get`/`plugins list`/`doctor` so the
+    verify run sees what actually stored. BRAVE_API_KEY must already be in this process env (oc_env
+    forwards it); only its PRESENCE is logged, never the value.
+    """
+    web = ocfg.get('web') or {}
+    web_applied: List[str] = []
+    if web.get('enabled'):
+        provider = web.get('provider', 'brave')
+        default_pkg = '@openclaw/brave-plugin' if provider == 'brave' else None
+        pkg = web.get('plugin_package', default_pkg)
+        if pkg:
+            run(PATH_PREFIX + f"openclaw plugins install {shlex.quote(pkg)}",
+                'openclaw_web.log', check=False, env=env,
+                timeout=int(web.get('plugin_install_timeout', 300)))
+            web_applied.append(f'plugins.install:{pkg}')
+        sets = [
+            (f'plugins.entries.{provider}.enabled', 'true'),
+            # Trust the freshly-installed external plugin so it loads explicitly (else OpenClaw warns
+            # "plugins.allow is empty; discovered non-bundled plugins may auto-load").
+            ('plugins.allow', json.dumps([provider])),
+            ('tools.web.search.provider', provider),
+            ('tools.web.search.enabled', 'true'),
+            ('tools.web.fetch.enabled', 'true'),
+            ('tools.web.search.maxResults', str(int(web.get('max_results', 5)))),
+            ('tools.web.search.timeoutSeconds', '30'),
+            # 'coding' profile already includes group:web AND group:runtime (codeMode needs exec).
+            ('tools.profile', web.get('profile', 'coding')),
+        ]
+        if web.get('code_mode'):
+            sets.append(('tools.codeMode.enabled', 'true'))
+        for key, val in sets:
+            run(PATH_PREFIX + f"openclaw config set {shlex.quote(key)} {shlex.quote(val)}",
+                'openclaw_web.log', check=False, env=env, timeout=60)
+            web_applied.append(key)
+        for key in (f'plugins.entries.{provider}.enabled', 'tools.web.search.provider',
+                    'tools.web.search.enabled', 'tools.web.fetch.enabled',
+                    'tools.web.search.maxResults', 'tools.profile', 'tools.codeMode'):
+            run(PATH_PREFIX + f"openclaw config get {shlex.quote(key)}",
+                'openclaw_web.log', check=False, env=env, timeout=60)
+        run(PATH_PREFIX + 'openclaw plugins list --json || openclaw plugins list || true',
+            'openclaw_web.log', check=False, env=env, timeout=120)
+        run(PATH_PREFIX + 'openclaw doctor --json || openclaw doctor || true',
+            'openclaw_web.log', check=False, env=env, timeout=120)
+        append(RESULTS / 'openclaw_web.log',
+               f"[{now()}] BRAVE_API_KEY_present_in_env={bool(os.environ.get('BRAVE_API_KEY'))}\n")
+        if web.get('lean_workspace'):
+            _lean_workspace()
+
+    identity = ocfg.get('identity') or {}
+    seeded = False
+    if identity.get('name'):
+        try:
+            ws = _workspace_dir()
+            ws.mkdir(parents=True, exist_ok=True)
+            name = str(identity['name'])
+            parts = [f"# USER\n\n- The user's name is {name}. Always address them as {name}.\n"]
+            if identity.get('email'):
+                parts.append(f"- Email: {identity['email']}\n")
+            if identity.get('notes'):
+                parts.append(f"- {identity['notes']}\n")
+            (ws / 'USER.md').write_text(''.join(parts), encoding='utf-8')
+            seeded = True
+        except Exception as exc:
+            append(RESULTS / 'error.log', f"[{now()}] USER.md seed {exc!r}\n")
+    return web_applied, seeded
 
 
 def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -542,10 +732,14 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
                 'openclaw_config.log', check=False, env=env, timeout=60)
             applied.append(key)
 
+    # Optional deep-research wiring (web search + identity), gated by config (off for smoke/legacy).
+    web_applied, identity_seeded = _configure_web_and_identity(ocfg, env)
+
     run(PATH_PREFIX + 'openclaw config file', 'openclaw_config.log', check=False, env=env, timeout=60)
     run(PATH_PREFIX + 'openclaw models list --json', 'openclaw_models.log', check=False, env=env, timeout=120)
     return {'model_ref': model_ref, 'provider_id': provider_id, 'gateway_port': gateway_port,
-            'gateway_token_set': bool(env['OPENCLAW_GATEWAY_TOKEN']), 'compat_applied': applied}
+            'gateway_token_set': bool(env['OPENCLAW_GATEWAY_TOKEN']), 'compat_applied': applied,
+            'web_applied': web_applied, 'identity_seeded': identity_seeded}
 
 
 def start_openclaw_gateway(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -810,10 +1004,34 @@ def status() -> None:
     bundle()
 
 
+def _snapshot_openclaw_state() -> None:
+    """Best-effort: copy the agent session transcripts + workspace identity files into the results
+    bundle so a run can be audited offline — e.g. did web_search actually fire (tool calls in the
+    session JSONL)? was USER.md injected? Never copies .env/secrets; the forwarded key is read from
+    process env by the provider and does not appear in transcripts."""
+    try:
+        dst = RESULTS / 'openclaw_state'
+        ws = Path(os.path.expanduser(os.environ.get('OPENCLAW_WORKSPACE_DIR', '~/.openclaw/workspace')))
+        for name in ('USER.md', 'AGENTS.md', 'MEMORY.md'):
+            src = ws / name
+            if src.exists():
+                dst.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst / name)
+        sess_root = Path(os.path.expanduser('~/.openclaw/agents'))
+        if sess_root.exists():
+            for jsonl in sorted(sess_root.glob('*/sessions/*.jsonl'))[-5:]:
+                d = dst / 'sessions'
+                d.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(jsonl, d / jsonl.name)
+    except Exception:
+        pass
+
+
 def bundle() -> None:
     # Atomic: build a pid-unique temp archive then os.replace it onto ZIP_PATH, so the launcher's
     # `bundle` exec and a worker's terminal bundle() can't corrupt the zip if they overlap.
     RESULTS.mkdir(parents=True, exist_ok=True)
+    _snapshot_openclaw_state()
     tmp_base = str(BASE / f'._bundle_{os.getpid()}')
     archive = shutil.make_archive(tmp_base, 'zip', str(RESULTS))
     os.replace(archive, str(ZIP_PATH))
@@ -821,6 +1039,7 @@ def bundle() -> None:
 
 
 def main() -> None:
+    load_forwarded_secrets()  # allowlist secrets into env for this process (worker or action)
     # Detached worker entrypoint: `python remote_...py --worker <bootstrap|prompt|task>`.
     if len(sys.argv) >= 3 and sys.argv[1] == '--worker':
         worker = sys.argv[2]
