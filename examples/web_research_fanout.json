@@ -3,8 +3,8 @@
   "mode": "research",
   "orchestration": "subagent-fanout",
   "transport": "local",
-  "timeout_seconds": 2400,
-  "step_timeout_seconds": 600,
+  "timeout_seconds": 3000,
+  "step_timeout_seconds": 700,
   "topic": "Latest stable versions (subagent fan-out)",
   "session_key": "lead-fanout",
   "steps": [

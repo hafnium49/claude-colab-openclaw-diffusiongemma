@@ -1,0 +1,79 @@
+{
+  "_comment": "DiffusionGemma 26B-A4B-NVFP4 on L4 (vLLM, gemma4 native tool_calls, thinking ON) + Layer-1 bounded-context (openclaw.context: pruning/reserve/midTurnPrecheck) \u2014 the capable model for driving Layer-3 subagent FAN-OUT (sessions_spawn) that LFM2.5-8B on serial T4 was too slow to complete. Run: --gpu L4 --config configs/diffusiongemma_research.json --task examples/web_research_fanout.json. BRAVE_API_KEY forwarded from ~/.env.",
+  "model": {
+    "id": "RedHatAI/diffusiongemma-26B-A4B-it-NVFP4",
+    "name": "DiffusionGemma 26B-A4B IT NVFP4",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "context_window": 262144,
+    "max_tokens": 4096
+  },
+  "vllm": {
+    "install": true,
+    "install_command": "python -m pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly/cu129 --extra-index-url https://download.pytorch.org/whl/cu129",
+    "install_timeout_seconds": 3600,
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 2400,
+    "use_v2_model_runner": "1",
+    "hf_transfer": "1",
+    "serve_args": [
+      "--trust-remote-code",
+      "--max-num-seqs",
+      "1",
+      "--gpu-memory-utilization",
+      "0.90",
+      "--max-model-len",
+      "32768",
+      "--hf-overrides",
+      "{\"diffusion_sampler\":\"entropy_bound\",\"diffusion_entropy_bound\":0.1}",
+      "--default-chat-template-kwargs",
+      "{\"enable_thinking\":true}",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser",
+      "gemma4",
+      "--reasoning-parser",
+      "gemma4"
+    ]
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "gateway_bind": "loopback",
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": true,
+      "maxTokens": 2048,
+      "contextWindow": 32768
+    },
+    "web": {
+      "enabled": true,
+      "provider": "brave",
+      "plugin_package": "@openclaw/brave-plugin",
+      "max_results": 3,
+      "code_mode": false,
+      "lean_workspace": true
+    },
+    "identity": {
+      "name": "Hiroki"
+    },
+    "context": {
+      "enabled": true,
+      "pruning": {
+        "enabled": true,
+        "mode": "cache-ttl",
+        "ttl": "5m",
+        "min_prunable_tool_chars": 4000
+      },
+      "reserve_tokens_floor": 0,
+      "reserve_tokens": 4096,
+      "compaction_mode": "safeguard",
+      "mid_turn_precheck": true,
+      "tool_result_max_chars": 6000,
+      "memory_search_provider": "none"
+    }
+  }
+}
