@@ -37,6 +37,11 @@ bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
 # Original DiffusionGemma target (vLLM backend; needs an L4 entitlement)
 bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
   --config configs/diffusiongemma_nvfp4.json --task examples/prompt_task.json --out ./runs/openclaw-dg
+
+# DiffusionGemma/L4 WITH live web search (vLLM gemma4 native tool_calls, thinking on) — needs BRAVE_API_KEY in ~/.env
+# Verified 2026-06-18: web_search fired real Brave searches, cited URLs, thinking kept on.
+bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
+  --config configs/diffusiongemma_web.json --task examples/web_verify_task.json --out ./runs/dgweb
 ```
 
 `--keep-session` leaves the Colab runtime up for inspection (default tears it down after artifact download). The launcher runs `scripts/self_test.py` automatically before provisioning, so a self-test failure aborts the run.

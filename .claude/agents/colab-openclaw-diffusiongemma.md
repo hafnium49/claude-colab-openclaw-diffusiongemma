@@ -195,3 +195,13 @@ llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). See `docs/t4_llama_cpp_serving.md
   (launcher → `/content/ocdg_secrets.json` → `oc_env`), NEVER the user's `OPENCLAW_GATEWAY_TOKEN`. **T4
   default is now LFM2.5** (`llama_lfm2.json`); Qwen3.5-9B (hybrid-SSM) crashes llama.cpp mid-generation
   on a T4 — don't use it there.
+- **DiffusionGemma/L4 ALSO has web search** (`configs/diffusiongemma_web.json`, VERIFIED on L4 2026-06-18):
+  vLLM NATIVE tool_calls via the `gemma4` parser — append `--enable-auto-tool-choice --tool-call-parser
+  gemma4 --reasoning-parser gemma4` to the vLLM serve_args (per the official recipes.vllm.ai DiffusionGemma
+  recipe; NO `--chat-template` — built-in template handles tools; thinking stays ON, routed to
+  reasoning_content), set `compat.supportsTools:true`, and raise `--max-model-len`/`contextWindow` to 32768
+  (the plain 4096 overflows the agent+tools prompt even on "what is my name?"; KV ~0.7 GiB easily fits the
+  L4). Same `openclaw.web`/`identity` wiring — NO code change. Verified: gemma4 emitted native tool_calls
+  under block-diffusion decode, web_search hit Brave (Python 3.14 + cited URL), "Your name is Hiroki",
+  finishReason stop, no tag leakage. Multi-step edge: a 3rd accumulated tool step hit OpenClaw's "Already
+  compacted" auto-compaction bug (also seen on T4) — raise context further (65536) for heavier multi-step.

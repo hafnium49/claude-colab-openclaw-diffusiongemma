@@ -181,3 +181,10 @@ recipe in `docs/t4_llama_cpp_serving.md`.
   "remember my name" fix); `lean_workspace` trims the default 8 KB AGENTS.md. `BRAVE_API_KEY` is forwarded
   from `~/.env` via a strict ALLOWLIST (NEVER the user's `OPENCLAW_GATEWAY_TOKEN`). **T4 default is now
   LFM2.5** (`llama_lfm2.json`); Qwen3.5-9B (hybrid-SSM) crashes llama.cpp on a T4.
+- **DiffusionGemma/L4 also has web search** (`configs/diffusiongemma_web.json`, VERIFIED on L4 2026-06-18):
+  vLLM NATIVE tool_calls via the `gemma4` parser — add `--enable-auto-tool-choice --tool-call-parser gemma4
+  --reasoning-parser gemma4` (official recipe; NO `--chat-template`; thinking ON via reasoning_content),
+  `compat.supportsTools:true`, raise `--max-model-len`/`contextWindow` to 32768 (4096 overflows the
+  agent+tools prompt). Same web/identity wiring (no code change). Verified: native tool_calls under
+  block-diffusion, real Brave search (Python 3.14 + URL), "Your name is Hiroki". 3rd multi-step tool turn
+  can hit OpenClaw's "Already compacted" bug — raise context (65536) for heavier multi-step.
