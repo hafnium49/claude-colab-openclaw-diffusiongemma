@@ -982,6 +982,26 @@ def prompt_status() -> None:
 # Phase: task (autonomous, time-consuming job — deep research), detached + polled
 # ---------------------------------------------------------------------------
 
+def _fanout_lead_message(steps: List[str]) -> str:
+    """Lead-agent prompt for orchestration='subagent-fanout': delegate each sub-question to an
+    ISOLATED sub-agent (sessions_spawn/sessions_yield) so raw web pages stay in the child context and
+    only a distilled summary returns to the lead — the structural bounded-context fix (Layer 3)."""
+    subqs = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
+    return (
+        "You are a research LEAD. Coordinate ISOLATED sub-agents so raw web pages never fill your own "
+        "context. Sub-questions to answer:\n\n" + subqs + "\n\n"
+        "For EACH sub-question, in order:\n"
+        "1. Call the `sessions_spawn` tool with context:\"isolated\" and a `task` that tells the worker "
+        "to use web_search/web_fetch to answer that ONE sub-question and to END its reply with a concise "
+        "(<=300 token) summary containing the answer plus the exact source URL(s).\n"
+        "2. Then call `sessions_yield` to receive the worker's summary. Do NOT poll with sessions_list, "
+        "sessions_history, or sleep — `sessions_yield` is the waiting primitive.\n"
+        "After every worker has returned, write a FINAL Markdown answer addressing every sub-question "
+        "with its value and source URL (use a table when appropriate). Never paste raw page text — only "
+        "the distilled findings and citations."
+    )
+
+
 def task() -> None:
     _launch_worker('task', TASK_STATUS_PATH, TASK_DONE_PATH, 'task_worker.log', 'TASK_LAUNCHED')
 
@@ -1010,26 +1030,43 @@ def _task_run() -> None:
         session_key = task_cfg.get('session_key') or f"research-{int(time.time())}"
         env = oc_env(config)
 
+        orchestration = task_cfg.get('orchestration', 'shared-session')
         out_md = RESULTS / 'research_result.md'
         out_md.write_text(f"# Autonomous research result\n\n- Topic: {task_cfg.get('topic', '')}\n"
                           f"- Model: {model_ref}\n- Engine: openclaw agent (--local, session "
-                          f"{session_key})\n- Started: {now()}\n", encoding='utf-8')
+                          f"{session_key}, orchestration={orchestration})\n- Started: {now()}\n",
+                          encoding='utf-8')
         step_results = []
-        for i, step in enumerate(steps, 1):
-            r = run(_agent_cmd(model_ref, step, session_key, per_step), f'task_step_{i}.log',
-                    check=False, env=env, timeout=per_step + 60)
-            raw = (RESULTS / f'task_step_{i}.log').read_text(encoding='utf-8', errors='replace')
+        if orchestration == 'subagent-fanout':
+            # Layer 3: one LEAD turn fans each sub-question out to an isolated sub-agent so raw pages
+            # stay in the child context; only distilled summaries return. Single long turn (no Python
+            # poll loop — the lead uses sessions_yield), so give it the whole budget.
+            lead_to = int(task_cfg.get('lead_timeout_seconds', total_budget))
+            r = run(_agent_cmd(model_ref, _fanout_lead_message(steps), session_key, lead_to),
+                    'task_lead.log', check=False, env=env, timeout=lead_to + 120)
+            raw = (RESULTS / 'task_lead.log').read_text(encoding='utf-8', errors='replace')
             text = extract_agent_text(raw)
             got = text is not None
-            body = text if got else '(no text returned)'
-            append(out_md, f"\n## Step {i}\n\n**Prompt:** {step}\n\n{body}\n")
-            step_results.append({'step': i, 'returncode': r['returncode'], 'got_text': got,
+            append(out_md, f"\n## Lead synthesis (subagent fan-out)\n\n{text if got else '(no text returned)'}\n")
+            step_results.append({'step': 1, 'returncode': r['returncode'], 'got_text': got,
                                  'chars': len(text) if got else 0})
-            write_status(TASK_STATUS_PATH, 'running', {'completed_steps': i, 'total_steps': len(steps)})
+            write_status(TASK_STATUS_PATH, 'running', {'completed_steps': 1, 'total_steps': 1})
+        else:
+            for i, step in enumerate(steps, 1):
+                r = run(_agent_cmd(model_ref, step, session_key, per_step), f'task_step_{i}.log',
+                        check=False, env=env, timeout=per_step + 60)
+                raw = (RESULTS / f'task_step_{i}.log').read_text(encoding='utf-8', errors='replace')
+                text = extract_agent_text(raw)
+                got = text is not None
+                body = text if got else '(no text returned)'
+                append(out_md, f"\n## Step {i}\n\n**Prompt:** {step}\n\n{body}\n")
+                step_results.append({'step': i, 'returncode': r['returncode'], 'got_text': got,
+                                     'chars': len(text) if got else 0})
+                write_status(TASK_STATUS_PATH, 'running', {'completed_steps': i, 'total_steps': len(steps)})
 
         manifest['task'] = {'mode': task_cfg.get('mode', 'research'), 'engine': 'openclaw-agent',
-                            'session_key': session_key, 'steps': step_results,
-                            'result_file': 'research_result.md'}
+                            'orchestration': orchestration, 'session_key': session_key,
+                            'steps': step_results, 'result_file': 'research_result.md'}
         manifest['ok'] = bool(step_results) and all(s['returncode'] == 0 and s['got_text'] for s in step_results)
     except Exception as exc:
         manifest['ok'] = False

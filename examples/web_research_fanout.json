@@ -1,0 +1,15 @@
+{
+  "_comment": "Layer 3 subagent FAN-OUT verify. orchestration='subagent-fanout' makes ONE lead agent delegate each sub-question to an ISOLATED sub-agent (sessions_spawn -> sessions_yield) so raw web pages stay in the child context and only a distilled summary returns to the lead — the STRUCTURAL bounded-context fix (vs Layer-1 pruning which trims in place). The 'steps' are the sub-question topics the lead fans out; the lead wraps them with the sessions_spawn/yield instructions. Use with configs/lfm2_ollama_research.json on a T4. Probe confirmed sessions_spawn/subagents are in the --local agent catalog.",
+  "mode": "research",
+  "orchestration": "subagent-fanout",
+  "transport": "local",
+  "timeout_seconds": 2400,
+  "step_timeout_seconds": 600,
+  "topic": "Latest stable versions (subagent fan-out)",
+  "session_key": "lead-fanout",
+  "steps": [
+    "the current latest stable version of Python (from python.org)",
+    "the current latest LTS version of Node.js (from nodejs.org)",
+    "the current latest stable version of Go (from go.dev)"
+  ]
+}

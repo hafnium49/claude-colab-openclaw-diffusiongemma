@@ -29,6 +29,7 @@ required = [
     'examples/research_task.json',
     'examples/web_verify_task.json',
     'examples/web_research_deep.json',
+    'examples/web_research_fanout.json',
     'notebooks/_gen_notebook.py',
     'notebooks/openclaw_chat_colab.ipynb',
     'notebooks/_gen_colab_ai_notebook.py',
@@ -49,7 +50,7 @@ for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/diffusiongemma_web.jso
             'configs/lfm2_ollama_web.json', 'configs/lfm2_ollama_research.json',
             'configs/colab_ai_gemini.json',
             'examples/prompt_task.json', 'examples/research_task.json', 'examples/web_verify_task.json',
-            'examples/web_research_deep.json',
+            'examples/web_research_deep.json', 'examples/web_research_fanout.json',
             'notebooks/openclaw_chat_colab.ipynb', 'notebooks/openclaw_colab_ai.ipynb',
             'notebooks/openclaw_diffusiongemma_colab.ipynb']:
     with (ROOT / rel).open('r', encoding='utf-8') as f:
