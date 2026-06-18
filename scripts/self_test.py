@@ -17,6 +17,7 @@ required = [
     'remote/remote_colab_openclaw_diffusiongemma.py',
     'remote/colab_exec_stub.py',
     'configs/diffusiongemma_nvfp4.json',
+    'configs/diffusiongemma_web.json',
     'configs/smoke_test_tiny.json',
     'configs/llama_qwen9b.json',
     'configs/llama_smoke.json',
@@ -39,7 +40,8 @@ for rel in required:
     if not path.exists():
         raise SystemExit(f'Missing required file: {rel}')
 
-for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/smoke_test_tiny.json',
+for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/diffusiongemma_web.json',
+            'configs/smoke_test_tiny.json',
             'configs/llama_qwen9b.json',
             'configs/llama_smoke.json', 'configs/llama_lfm2.json',
             'configs/lfm2_ollama_web.json',

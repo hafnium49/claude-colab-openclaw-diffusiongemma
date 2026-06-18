@@ -1,0 +1,64 @@
+{
+  "_comment": "DiffusionGemma 26B-A4B-it-NVFP4 on an L4 (vLLM) WITH live web search for deep research. Adds vLLM native tool calling via the gemma4 parser: --enable-auto-tool-choice --tool-call-parser gemma4 --reasoning-parser gemma4 (per the official recipe https://recipes.vllm.ai/Google/diffusiongemma-26B-A4B-it — the built-in chat_template handles tools, so NO --chat-template override; thinking STAYS ON, routed to reasoning_content by --reasoning-parser gemma4). openclaw.compat.supportsTools=true is the gate that makes OpenClaw send the tools schema and read native tool_calls. compat.contextWindow + --max-model-len raised so the agent+web prompt fits (web search needs more than the 4096 of the plain config). web/identity reuse the validated T4 wiring (Brave plugin install, USER.md identity). BRAVE_API_KEY forwarded from ~/.env by the launcher. UNVERIFIED on L4 — gemma4 tool calling under block-diffusion decode is not in the official recipe's serve line; run `--gpu L4 --config configs/diffusiongemma_web.json --task examples/web_verify_task.json` and confirm choices[0].message.tool_calls is populated (no tool/reasoning tags leaking into content). FALLBACKS if tool_calls are empty/garbled: (a) add --chat-template <tool_chat_template_gemma4.jinja>, or (b) flip to codeMode (compat.supportsTools=false + web.code_mode=true, drop --tool-call-parser).",
+  "model": {
+    "id": "RedHatAI/diffusiongemma-26B-A4B-it-NVFP4",
+    "name": "DiffusionGemma 26B-A4B IT NVFP4",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "context_window": 262144,
+    "max_tokens": 4096
+  },
+  "vllm": {
+    "install": true,
+    "install_command": "python -m pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly/cu129 --extra-index-url https://download.pytorch.org/whl/cu129",
+    "install_timeout_seconds": 3600,
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 2400,
+    "use_v2_model_runner": "1",
+    "hf_transfer": "1",
+    "serve_args": [
+      "--trust-remote-code",
+      "--max-num-seqs",
+      "1",
+      "--gpu-memory-utilization",
+      "0.90",
+      "--max-model-len",
+      "8192",
+      "--hf-overrides",
+      "{\"diffusion_sampler\":\"entropy_bound\",\"diffusion_entropy_bound\":0.1}",
+      "--default-chat-template-kwargs",
+      "{\"enable_thinking\":true}",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser",
+      "gemma4",
+      "--reasoning-parser",
+      "gemma4"
+    ]
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "gateway_bind": "loopback",
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": true,
+      "maxTokens": 1024,
+      "contextWindow": 8192
+    },
+    "web": {
+      "enabled": true,
+      "provider": "brave",
+      "plugin_package": "@openclaw/brave-plugin",
+      "max_results": 3,
+      "code_mode": false,
+      "lean_workspace": true
+    },
+    "identity": {
+      "name": "Hiroki"
+    }
+  }
+}
