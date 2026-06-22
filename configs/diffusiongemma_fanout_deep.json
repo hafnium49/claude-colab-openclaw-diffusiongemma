@@ -76,7 +76,9 @@
       "memory_search_provider": "none"
     },
     "fanout": {
-      "max_spawn_depth": 2
+      "max_spawn_depth": 2,
+      "max_children_per_agent": 4,
+      "max_concurrent": 12
     }
   }
 }

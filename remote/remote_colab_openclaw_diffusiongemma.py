@@ -778,12 +778,23 @@ def _configure_fanout(ocfg: Dict[str, Any], env: Dict[str, str]) -> List[str]:
     applied: List[str] = []
     max_depth = int(fan.get('max_spawn_depth', 1))
     if max_depth > 1:
-        key = 'agents.defaults.subagents.maxSpawnDepth'
-        run(PATH_PREFIX + f"openclaw config set {shlex.quote(key)} {shlex.quote(str(max_depth))}",
-            'openclaw_fanout.log', check=False, env=env, timeout=60)
-        run(PATH_PREFIX + f"openclaw config get {shlex.quote(key)}",
-            'openclaw_fanout.log', check=False, env=env, timeout=60)
-        applied.append(key)
+        # Also CAP fan-out width: DiffusionGemma over-spawns (a coordinator fired ~12 leaf spawns for
+        # 3 sub-questions), and 2 coordinators x ~12 leaves >> the maxConcurrent lane (default 8) →
+        # the whole tree queues and STALLS before synthesis (verified 2026-06-22). maxChildrenPerAgent
+        # (docs default 5, range 1-20) bounds ACTIVE children per agent so a runaway coordinator can't
+        # flood the lane; maxConcurrent (docs default 8) is raised to give the well-formed tree
+        # (G coordinators x ~3 leaves) headroom. All documented agents.defaults.subagents keys.
+        sets = [
+            ('agents.defaults.subagents.maxSpawnDepth', str(max_depth)),
+            ('agents.defaults.subagents.maxChildrenPerAgent', str(int(fan.get('max_children_per_agent', 4)))),
+            ('agents.defaults.subagents.maxConcurrent', str(int(fan.get('max_concurrent', 12)))),
+        ]
+        for key, val in sets:
+            run(PATH_PREFIX + f"openclaw config set {shlex.quote(key)} {shlex.quote(val)}",
+                'openclaw_fanout.log', check=False, env=env, timeout=60)
+            run(PATH_PREFIX + f"openclaw config get {shlex.quote(key)}",
+                'openclaw_fanout.log', check=False, env=env, timeout=60)
+            applied.append(key)
     return applied
 
 
