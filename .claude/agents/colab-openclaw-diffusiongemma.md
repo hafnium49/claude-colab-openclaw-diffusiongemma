@@ -89,8 +89,8 @@ the full record. They override the idealized assumptions above.
    llama.cpp paths; A100 only if 24 GB is too tight (it's ~3× L4's unit cost). See the 2026-06-17
    notes below for the validated DiffusionGemma-on-L4 path and the cost table (`[[colab-gpu-costs]]`).
 7. **The committed `bin/` master is now refactored** to the validated short-exec model
-   (2026-06-17): config-driven serve backend (`serve.backend: llama_cpp|vllm`, llama.cpp /
-   Qwen3.5-9B default), EVERY heavy phase detached + polled (`bootstrap`/`prompt`/`task` workers
+   (2026-06-17): config-driven serve backend (`serve.backend: llama_cpp|vllm|ollama`, llama.cpp /
+   LFM2.5-8B-A1B default — Qwen3.5-9B was the old default but crashes llama.cpp on a T4), EVERY heavy phase detached + polled (`bootstrap`/`prompt`/`task` workers
    with `*_status` polls — no long synchronous exec), the compat infer-fixes applied, an
    autonomous `mode:"research"` multi-step task phase, and `BOOTSTRAP_BUDGET` derived from the
    config's own timeouts. The `runs/dev/*` harness remains a faster scratch path for iteration.
@@ -205,3 +205,12 @@ llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). See `docs/t4_llama_cpp_serving.md
   under block-diffusion decode, web_search hit Brave (Python 3.14 + cited URL), "Your name is Hiroki",
   finishReason stop, no tag leakage. Multi-step edge: a 3rd accumulated tool step hit OpenClaw's "Already
   compacted" auto-compaction bug (also seen on T4) — raise context further (65536) for heavier multi-step.
+
+## 2026-06-22 — Bounded-context deep research (Layers 1–2) + Layer-3 subagent FAN-OUT, VERIFIED on L4
+
+The "Already compacted" multi-step edge above is now **SOLVED** with OpenClaw's own bounded-context machinery — **NOT** "raise the window" (the weakest lever; the docs say LOWER the reserve).
+
+- **Layers 1–2 (config-only, VERIFIED on T4, commit `6142120`):** a gated `openclaw.context` block (`_configure_context`) turns ON `contextPruning` (**OFF by default for non-Anthropic backends** — the key lever; it trims old multi-KB tool results between calls), LOWERS `compaction.reserveTokensFloor`→0 / `reserveTokens`→4096 (the "contextWindow/2 budget" is the floor eaten from a small window, not a hard /2), enables `midTurnPrecheck`, caps `contextLimits.toolResultMaxChars`, sets `memorySearch.provider`. Proof: `configs/lfm2_ollama_research.json` + `examples/web_research_deep.json` (6 steps / 4 accumulating searches) ran CLEANLY at contextWindow 32768 — the exact size that hit "Already compacted" at step 3 without it (pruning fired: `toolResultReducibleChars` 0→15k).
+- **Layer 3 (subagent fan-out, VERIFIED on L4/DiffusionGemma 2026-06-22, commit `b52be9b`):** set the task's `orchestration: "subagent-fanout"` (default stays `shared-session`). One LEAD turn delegates each sub-question to an ISOLATED child via `sessions_spawn(context:"isolated")` + `sessions_yield`; raw web pages stay in the child transcript, only a distilled summary returns → the lead stays bounded regardless of page count. Run `--gpu L4 --config configs/diffusiongemma_research.json --task examples/web_research_fanout.json`. Proof: the lead spawned 2 ISOLATED children, each ran real Brave `web_search`/`web_fetch` (raw 96–140 KB pages quarantined in the children), and the lead synthesized a cited Markdown table (Python / Node LTS) in **~47 s** with **`compactionCount 0`**. Confirmed green twice (`manifest.ok:true`, table in `research_result.md`).
+- **Two HARNESS gotchas fixed in `b52be9b` (NOT architecture):** (1) `run()`'s `subprocess.run(text=True)` returns `TimeoutExpired.output` as **bytes** → decode it or the timeout path raises `TypeError("can't concat str to bytes")` and loses the whole phase. (2) `openclaw agent --local --json` **HANGS ~20 min after producing its answer once subagents are spawned** (doesn't self-exit until children are reaped) → it gets killed by timeout and never prints `--json`. Recover the synthesis from the live server-side trajectory (`_lead_synthesis_from_trajectory`: last `model.completed.assistantTexts` for sessionKey `agent:main:<session_key>`); the fan-out success check keys on `got_text`, **NOT** the CLI returncode (124 is expected). Keep the lead timeout SHORT (the answer is fast; you're only waiting to kill a hung process). See memory `openclaw-local-subagent-cli-hang`.
+- **Practical guidance:** for T4 fee-free, **Layer-1 pruning** is the bounded-context fix; **Layer-3 fan-out is the L4 path** (LFM2.5-8B on a serial T4 spawned + searched correctly but was too slow to finish the orchestration in-budget — needs a capable model on vLLM).

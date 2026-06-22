@@ -2,7 +2,7 @@
 
 Control a single Google Colab GPU runtime that hosts **OpenClaw** + a **self-hosted, OpenAI-compatible LLM** on loopback — no paid LLM API, no public tunnel. The serving backend is config-driven:
 
-- **`llama_cpp` (default, validated, fee-free):** llama.cpp serves `Qwen3.5-9B` (4-bit GGUF) on a free Colab **T4**. This is the path that actually works on free Colab — vLLM can't serve ≥3B on a T4 (FlashInfer crashes on Turing/sm_75; see [`docs/t4_llama_cpp_serving.md`](docs/t4_llama_cpp_serving.md)).
+- **`llama_cpp` (default, validated, fee-free):** llama.cpp serves `LFM2.5-8B-A1B` (4-bit GGUF) on a free Colab **T4** (Qwen3.5-9B was the old default but its hybrid-SSM build crashes llama.cpp there). This is the path that actually works on free Colab — vLLM can't serve ≥3B on a T4 (FlashInfer crashes on Turing/sm_75; see [`docs/t4_llama_cpp_serving.md`](docs/t4_llama_cpp_serving.md)). For live web search add the `ollama` backend ([`configs/lfm2_ollama_web.json`](configs/lfm2_ollama_web.json)).
 - **`vllm` (legacy):** vLLM serves `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4` — needs an **L4** entitlement.
 
 Everything runs on loopback inside the Colab VM (the sandbox); the local machine is only the controller. There are **two ways to deploy**:
@@ -78,17 +78,22 @@ Install the Google Colab CLI locally (`pip install google-colab-cli`), authentic
 bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
   --config configs/llama_smoke.json --task examples/prompt_task.json --out ./runs/smoke
 
-# Validated default: Qwen3.5-9B on a T4, single prompt (fee-free, self-hosted)
+# Validated default: LFM2.5-8B-A1B (4-bit GGUF) on a T4, single prompt (fee-free, self-hosted)
 bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
-  --config configs/llama_qwen9b.json --task examples/prompt_task.json --out ./runs/llama9b
+  --config configs/llama_lfm2.json --task examples/prompt_task.json --out ./runs/lfm2
 
-# Autonomous, human-free deep-research run (detached + polled multi-step task)
+# Deep research with LIVE web search (Ollama backend -> real Brave search) — needs BRAVE_API_KEY in ~/.env
 bash bin/colab_openclaw_diffusiongemma.sh --gpu T4 \
-  --config configs/llama_qwen9b.json --task examples/research_task.json --out ./runs/research
+  --config configs/lfm2_ollama_web.json --task examples/web_verify_task.json --out ./runs/research
 
-# Original DiffusionGemma target (vLLM backend; needs an L4 entitlement)
+# Original DiffusionGemma target on L4 (vLLM / NVFP4)
 bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
   --config configs/diffusiongemma_nvfp4.json --task examples/prompt_task.json --out ./runs/openclaw-dg
+
+# Bounded-context deep research with Layer-3 subagent FAN-OUT (VERIFIED 2026-06-22 on L4) — needs BRAVE_API_KEY
+# Lead delegates each sub-question to an ISOLATED sub-agent (sessions_spawn/yield); raw pages stay in the child.
+bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
+  --config configs/diffusiongemma_research.json --task examples/web_research_fanout.json --out ./runs/fanout
 ```
 
 `--keep-session` leaves the VM up for inspection (default tears it down after download). The launcher runs `scripts/self_test.py` first, so a self-test failure aborts before any VM is provisioned. The `--out` directory receives `openclaw_diffusiongemma_results.zip`, `manifest.json`, `research_result.md` (research mode), `colab_session_log.ipynb`, and local command logs.
@@ -105,7 +110,7 @@ The project ships a subagent and skill (`self_test.py` requires both):
 Ask Claude Code to use the `colab-openclaw-diffusiongemma` subagent, or invoke the skill directly:
 
 ```text
-/colab-openclaw-diffusiongemma run configs/llama_qwen9b.json examples/prompt_task.json
+/colab-openclaw-diffusiongemma run configs/llama_lfm2.json examples/prompt_task.json
 ```
 
 ## Notes

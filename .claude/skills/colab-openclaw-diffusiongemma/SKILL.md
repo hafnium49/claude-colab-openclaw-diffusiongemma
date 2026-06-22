@@ -87,7 +87,7 @@ cat ./runs/openclaw-dg/manifest.json 2>/dev/null || true
 The dev harness (`runs/dev/e2e.sh`) is **confirmed green** end-to-end on a Colab T4 (run #6,
 2026-06-15: `infer_ok=true`, model returns `openclaw-vllm-ok`). The standard `bin/` master has
 since been **refactored (2026-06-17)** to this proven short-exec model: config-driven serve
-backend (llama.cpp/Qwen3.5-9B default, vLLM legacy), all heavy phases detached + polled, compat
+backend (llama.cpp/LFM2.5-8B-A1B default — Qwen3.5-9B crashes llama.cpp on a T4 — vLLM/ollama also), all heavy phases detached + polled, compat
 infer-fixes applied, and an autonomous `mode:"research"` task phase. Full details in
 `docs/validation_findings.md`.
 Key points:
@@ -188,3 +188,12 @@ recipe in `docs/t4_llama_cpp_serving.md`.
   agent+tools prompt). Same web/identity wiring (no code change). Verified: native tool_calls under
   block-diffusion, real Brave search (Python 3.14 + URL), "Your name is Hiroki". 3rd multi-step tool turn
   can hit OpenClaw's "Already compacted" bug — raise context (65536) for heavier multi-step.
+
+## 2026-06-22 — Bounded-context deep research + Layer-3 subagent FAN-OUT (VERIFIED on L4)
+
+The "Already compacted" multi-step edge above is **SOLVED** via OpenClaw's bounded-context machinery (not "raise the window").
+
+- **Layers 1–2 (config-only, VERIFIED T4, `6142120`):** a gated `openclaw.context` block (`_configure_context`) turns ON `contextPruning` (OFF by default for non-Anthropic backends), LOWERS `compaction.reserveTokensFloor`→0 / `reserveTokens`→4096, enables `midTurnPrecheck`, caps `toolResultMaxChars`. `configs/lfm2_ollama_research.json` + `examples/web_research_deep.json` (6 steps / 4 accumulating searches) ran clean at contextWindow 32768.
+- **Layer 3 (fan-out, VERIFIED L4/DiffusionGemma `b52be9b`):** set the task's `orchestration:"subagent-fanout"` (default `shared-session`) — one LEAD turn delegates each sub-question to an ISOLATED child (`sessions_spawn context:isolated` + `sessions_yield`); raw pages stay in the child, only a distilled summary returns. Run `--gpu L4 --config configs/diffusiongemma_research.json --task examples/web_research_fanout.json`. Proven: lead spawned 2 isolated children, each ran real Brave search, lead wrote a cited table (Python / Node LTS) in ~47 s, `compactionCount 0`; green twice (`manifest.ok:true`, table in `research_result.md`).
+- **Two harness fixes (`b52be9b`):** (1) decode `TimeoutExpired.output` (bytes → else `TypeError("can't concat str to bytes")`); (2) `openclaw agent --local --json` hangs ~20 min after answering when subagents spawn → recover the synthesis from the server-side trajectory (`_lead_synthesis_from_trajectory`), judge on `got_text` not CLI rc (124 expected), keep the lead timeout short.
+- T4 fee-free → **Layer-1 pruning**; **Layer-3 fan-out is the L4 path** (LFM2.5-8B on serial T4 was too slow to finish the orchestration).

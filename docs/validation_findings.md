@@ -4,7 +4,7 @@ Status of bringing up **OpenClaw → vLLM → (target) DiffusionGemma** on a Goo
 controlled from local Claude Code via the `colab` CLI. This file records what has actually
 been **run and proven** on Colab, as opposed to the aspirational design in `architecture.md`.
 
-Last updated: 2026-06-15. Account: free-tier consumer Colab (`hafnium49@gmail.com`).
+Last updated: 2026-06-22. Account: free-tier consumer Colab (`hafnium49@gmail.com`).
 
 ## TL;DR
 
@@ -178,9 +178,31 @@ checkpoint is gated. The OpenClaw compat/token-budget fixes above still apply (a
 model may not need them, but they are harmless). DiffusionGemma's larger context/warmup makes
 the decoupled short-exec architecture even more necessary.
 
+## 2026-06-22 — Deep-research stack VERIFIED end-to-end (web search + bounded context + Layer-3 fan-out)
+
+- **DiffusionGemma on L4 is no longer aspirational** — provisioned, served (vLLM, NVFP4 via Marlin
+  FP4 weight-only), and driven end-to-end. The 2026-06-15 "L4 not entitled" blocker was the keep-alive
+  bug (fixed by `colab` ≥ 0.6.0), not the GPU.
+- **Live web search VERIFIED on both paths:** T4 fee-free via the `ollama` backend (LFM2.5 structured
+  `tool_calls`) and L4 via vLLM's `gemma4` native tool parser — real Brave `web_search`/`web_fetch`,
+  cited URLs, USER.md identity. (Detail in the agent/skill 2026-06-18 entries.)
+- **Bounded-context Layers 1–2 VERIFIED on T4** (commit `6142120`): the gated `openclaw.context` block
+  (pruning ON + lowered `reserveTokensFloor`/`reserveTokens` + `midTurnPrecheck` + `toolResultMaxChars`)
+  ran a 6-step / 4-search task clean at contextWindow 32768 — the size that previously hit "Already
+  compacted" at step 3. **"Raise the window" is the weakest lever; LOWER the reserve + turn pruning ON.**
+- **Layer-3 subagent fan-out VERIFIED on L4/DiffusionGemma** (commit `b52be9b`, 2026-06-22): the task's
+  `orchestration:"subagent-fanout"` makes a LEAD turn delegate each sub-question to an ISOLATED child
+  (`sessions_spawn context:isolated` + `sessions_yield`); raw pages stay quarantined in the children.
+  The lead synthesized a cited table (Python / Node LTS) in **~47 s** with **`compactionCount 0`**;
+  confirmed green twice (`manifest.ok:true`, table in `research_result.md`). Two harness gotchas fixed in
+  the same commit: decode `TimeoutExpired.output` (bytes→str, else `TypeError`), and recover the lead
+  synthesis from the server-side trajectory because `openclaw agent --local --json` hangs ~20 min after
+  answering once subagents are spawned. Full detail in `.claude/agents/colab-openclaw-diffusiongemma.md`.
+
 ## Open items
 
 - [x] Land `infer_ok=true` on T4 via the decoupled harness — **done, run #6, 2026-06-15.**
 - [ ] Refactor `bin/` + `remote/` from detached-bootstrap+sparse-poll to the short-exec model
       (port `e2e_boot.py`/`e2e_poll.py`/`e2e_finish.py` into the launcher; update `self_test.py`).
-- [ ] Obtain an L4/A100 and run the real DiffusionGemma profile (only remaining blocker is GPU).
+- [x] Obtain an L4/A100 and run the real DiffusionGemma profile — **done: L4 e2e green 2026-06-17;
+      web search + bounded-context + Layer-3 fan-out all VERIFIED on L4 by 2026-06-22 (see above).**
