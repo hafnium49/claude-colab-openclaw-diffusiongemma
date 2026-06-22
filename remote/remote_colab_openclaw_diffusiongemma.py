@@ -1048,6 +1048,16 @@ def prompt_status() -> None:
 # Phase: task (autonomous, time-consuming job — deep research), detached + polled
 # ---------------------------------------------------------------------------
 
+def _is_substantive_synthesis(text: str) -> bool:
+    """A real lead answer vs an OpenClaw control/empty marker. compaction.memoryFlush emits a silent
+    'NO_REPLY' turn (terminal stopReason, no toolCall) BEFORE compaction; that turn must NOT be
+    mistaken for the lead's synthesis (verified 2026-06-22: a depth-2 run produced the full table but
+    a later NO_REPLY turn was captured instead). Exclude NO_REPLY and trivially-short/empty turns from
+    both synthesis selection and the early-exit trigger."""
+    t = (text or '').strip()
+    return len(t) >= 12 and t.upper().strip('. ') not in {'NO_REPLY', 'NOREPLY', 'NO REPLY'}
+
+
 def _lead_completed_events(session_key: str) -> List[tuple]:
     """Scan OpenClaw's live trajectory for the LEAD session's `model.completed` events.
 
@@ -1096,7 +1106,7 @@ def _lead_completed_events(session_key: str) -> List[tuple]:
                     sr = str(last.get('stopReason') or '').lower()
                     has_tool = any(isinstance(b, dict) and b.get('type') == 'toolCall'
                                    for b in (last.get('content') or []))
-                    is_final = (sr in final_reasons) and not has_tool
+                    is_final = (sr in final_reasons) and not has_tool and _is_substantive_synthesis(joined)
                 events.append((int(ev.get('seq', 0) or 0), joined, is_final))
     except Exception:
         return events
@@ -1412,7 +1422,12 @@ def _snapshot_openclaw_state() -> None:
                 shutil.copy2(src, dst / name)
         sess_root = Path(os.path.expanduser('~/.openclaw/agents'))
         if sess_root.exists():
-            for jsonl in sorted(sess_root.glob('*/sessions/*.jsonl'))[-5:]:
+            # Sort by MTIME (not filename — names are random UUIDs) and keep the most-recently-written
+            # so the LEAD trajectory (written throughout the run) is always captured, not pushed out by
+            # many child sessions (verified 2026-06-22: a 6-sub-question run's lead was missed at [-5:]).
+            jsonls = sorted(sess_root.glob('*/sessions/*.jsonl'),
+                            key=lambda p: p.stat().st_mtime if p.exists() else 0.0)
+            for jsonl in jsonls[-20:]:
                 d = dst / 'sessions'
                 d.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(jsonl, d / jsonl.name)
