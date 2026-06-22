@@ -19,6 +19,7 @@ required = [
     'configs/diffusiongemma_nvfp4.json',
     'configs/diffusiongemma_web.json',
     'configs/diffusiongemma_research.json',
+    'configs/diffusiongemma_fanout_deep.json',
     'configs/smoke_test_tiny.json',
     'configs/llama_qwen9b.json',
     'configs/llama_smoke.json',
@@ -49,6 +50,7 @@ for rel in required:
 
 for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/diffusiongemma_web.json',
             'configs/diffusiongemma_research.json',
+            'configs/diffusiongemma_fanout_deep.json',
             'configs/smoke_test_tiny.json',
             'configs/llama_qwen9b.json',
             'configs/llama_smoke.json', 'configs/llama_lfm2.json',

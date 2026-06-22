@@ -1050,8 +1050,16 @@ def _lead_completed_events(session_key: str) -> List[tuple]:
     Shared detection used by both the synthesis recovery and the early-exit poll: find every
     trajectory event with sessionKey == 'agent:main:<session_key>' (children are
     'agent:main:subagent:...'), type == 'model.completed', and non-empty data.assistantTexts;
-    return them as (seq, text) tuples (unsorted). Best-effort: any failure returns []."""
+    return them as (seq, text, is_final) tuples (unsorted). Best-effort: any failure returns [].
+
+    `is_final` marks the lead's TERMINAL turn — its synthesis — vs an intermediate narration emitted
+    between tool calls: the turn's last assistant message ended the turn (terminal stopReason) AND
+    issued no further toolCall. The bare presence of assistantTexts is NOT a "done" signal —
+    DiffusionGemma emits things like "I am still waiting for the other sub-agents..." mid-orchestration,
+    and an over-eager early-exit on those truncates the run (verified 2026-06-22). The terminal
+    stopReason + no-toolCall pattern uniquely identifies the real final table in a known-good run."""
     want = 'agent:main:' + session_key
+    final_reasons = {'stop', 'end_turn', 'endturn', 'end', 'completed', 'stop_sequence', 'done'}
     events: List[tuple] = []
     try:
         root = Path(os.path.expanduser('~/.openclaw/agents'))
@@ -1072,10 +1080,20 @@ def _lead_completed_events(session_key: str) -> List[tuple]:
                     continue
                 if ev.get('sessionKey') != want or ev.get('type') != 'model.completed':
                     continue
-                texts = (ev.get('data') or {}).get('assistantTexts') or []
+                data = ev.get('data') or {}
+                texts = data.get('assistantTexts') or []
                 joined = "\n".join(t for t in texts if isinstance(t, str) and t.strip()).strip()
-                if joined:
-                    events.append((int(ev.get('seq', 0) or 0), joined))
+                if not joined:
+                    continue
+                is_final = False
+                asst = [m for m in (data.get('messagesSnapshot') or []) if m.get('role') == 'assistant']
+                if asst:
+                    last = asst[-1]
+                    sr = str(last.get('stopReason') or '').lower()
+                    has_tool = any(isinstance(b, dict) and b.get('type') == 'toolCall'
+                                   for b in (last.get('content') or []))
+                    is_final = (sr in final_reasons) and not has_tool
+                events.append((int(ev.get('seq', 0) or 0), joined, is_final))
     except Exception:
         return events
     return events
@@ -1088,12 +1106,15 @@ def _lead_synthesis_from_trajectory(session_key: str) -> Optional[str]:
     its answer when subagents are spawned (the CLI does not self-exit until the children are
     reaped), so the subprocess is killed by our timeout and never prints the `--json` payload —
     `extract_agent_text(task_lead.log)` then finds nothing. But the runtime writes the trajectory
-    live to disk, so the synthesis survives the kill. Return the latest (highest-seq) lead
-    model.completed assistantTexts. Best-effort: any failure returns None."""
+    live to disk, so the synthesis survives the kill. Prefer the latest TERMINAL synthesis
+    (is_final) so an intermediate "still waiting..." turn never wins; fall back to the latest
+    assistantTexts only if no terminal turn was captured. Best-effort: any failure returns None."""
     events = _lead_completed_events(session_key)
     if not events:
         return None
-    return max(events, key=lambda e: e[0])[1]
+    finals = [e for e in events if e[2]]
+    pick = max(finals, key=lambda e: e[0]) if finals else max(events, key=lambda e: e[0])
+    return pick[1]
 
 
 def _fanout_lead_message(steps: List[str]) -> str:
@@ -1143,6 +1164,24 @@ def _fanout_depth_clause(max_depth: int) -> str:
     )
 
 
+def _trajectory_fingerprint() -> tuple:
+    """(latest mtime, total size) across all lead+child trajectory files — a cheap "has anything
+    been written lately?" probe for the early-exit silence check. A stable fingerprint over a
+    sustained window means no child is still searching and no further announce-driven lead cycle is
+    coming (the CLI is just hanging while children are reaped)."""
+    root = Path(os.path.expanduser('~/.openclaw/agents'))
+    latest = 0.0
+    total = 0
+    try:
+        for t in root.glob('*/sessions/*.trajectory.jsonl'):
+            st = t.stat()
+            latest = max(latest, st.st_mtime)
+            total += st.st_size
+    except Exception:
+        pass
+    return (round(latest, 2), total)
+
+
 def _run_lead_with_early_exit(cmd: str, session_key: str, hard_timeout: int, log_name: str,
                               env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Run the fan-out LEAD CLI but stop as soon as it has finished its synthesis.
@@ -1154,12 +1193,19 @@ def _run_lead_with_early_exit(cmd: str, session_key: str, hard_timeout: int, log
     `model.completed` synthesis (the SAME detection `_lead_synthesis_from_trajectory` uses), then
     kill the group once the lead is done.
 
-    Done heuristic: once a lead model.completed event exists, wait one more poll (~5s) and confirm
-    no NEWER lead model.completed appeared (max seq unchanged) — i.e. the lead isn't mid-followup
-    turn — before terminating. `hard_timeout` is the fallback cap. Returns {"returncode": 0} on
-    early/clean exit (or natural CLI exit), {"returncode": 124} if the cap elapses first — shaped
-    like `run()`'s result so the caller can keep reading r["returncode"]."""
+    Done heuristic: the lead runs in SEVERAL announce-driven cycles as each child returns, so a
+    single terminal turn is NOT enough — an early "still waiting for the other sub-agents..." cycle
+    is itself terminal (stopReason stop, no toolCall). Stop only once BOTH hold: (a) a TERMINAL lead
+    synthesis exists (model.completed, terminal stopReason, no further toolCall — see
+    _lead_completed_events), AND (b) the WHOLE trajectory has been SILENT for `silence_s` (no child
+    still searching, no further lead cycle — the CLI is merely hanging while children are reaped).
+    `hard_timeout` is the fallback cap. Returns {"returncode": 0} on early/clean/natural exit,
+    {"returncode": 124} if the cap elapses with no terminal synthesis — shaped like `run()`'s result
+    so the caller can keep reading r["returncode"]."""
     poll_s = 5
+    silence_s = 75   # sustained trajectory quiet that means no child is still working and no further
+                     # announce-driven lead cycle is coming. Must exceed a child's slowest search +
+                     # the lead's inter-cycle think time, else an early cycle would truncate the run.
     log_path = RESULTS / log_name
     append(log_path, f"\n[{now()}] $ {cmd}\n")
     # Same env merge as run(): start from the process env, overlay the caller's oc_env() overrides.
@@ -1170,7 +1216,9 @@ def _run_lead_with_early_exit(cmd: str, session_key: str, hard_timeout: int, log
                             stdout=log_path.open('a', encoding='utf-8'),
                             stderr=subprocess.STDOUT, start_new_session=True, env=merged_env)
     deadline = time.time() + hard_timeout
-    confirm_seq: Optional[int] = None  # max lead seq seen on the previous poll once one exists
+    last_activity = time.time()
+    prev_fp: Optional[tuple] = None
+    have_synthesis = False
     try:
         while True:
             # Natural exit (lead self-exited, or crashed): honor whatever it did.
@@ -1178,22 +1226,22 @@ def _run_lead_with_early_exit(cmd: str, session_key: str, hard_timeout: int, log
                 return {'returncode': 0 if proc.returncode == 0 else proc.returncode}
             if time.time() >= deadline:
                 break  # hard cap -> fall through to kill + rc=124
-            events = _lead_completed_events(session_key)
-            if events:
-                max_seq = max(e[0] for e in events)
-                # Require two consecutive polls with the SAME max seq: the first poll proves a lead
-                # synthesis exists, the second proves the lead isn't producing a newer turn (so we
-                # don't kill it between an intermediate completion and its real final answer).
-                if confirm_seq is not None and max_seq <= confirm_seq:
-                    append(log_path, f"[{now()}] early-exit: lead synthesis stable at seq {max_seq}\n")
+            fp = _trajectory_fingerprint()
+            if fp != prev_fp:            # a child or lead cycle just wrote -> still active
+                prev_fp = fp
+                last_activity = time.time()
+            # Need a TERMINAL synthesis AND sustained silence (no more announce-driven cycles coming).
+            if any(e[2] for e in _lead_completed_events(session_key)):
+                have_synthesis = True
+                if time.time() - last_activity >= silence_s:
+                    append(log_path, f"[{now()}] early-exit: terminal synthesis + {silence_s}s trajectory silence; stopping\n")
                     break
-                confirm_seq = max_seq
             time.sleep(poll_s)
     except Exception as exc:
         append(log_path, f"[{now()}] early-exit poll error: {exc!r}\n")
     finally:
         _kill_process_group(proc)
-    timed_out = time.time() >= deadline and confirm_seq is None
+    timed_out = time.time() >= deadline and not have_synthesis
     return {'returncode': 124 if timed_out else 0}
 
 

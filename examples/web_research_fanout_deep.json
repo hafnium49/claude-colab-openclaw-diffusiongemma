@@ -3,7 +3,7 @@
   "mode": "research",
   "orchestration": "subagent-fanout",
   "transport": "local",
-  "timeout_seconds": 600,
+  "timeout_seconds": 1200,
   "step_timeout_seconds": 700,
   "topic": "Latest stable versions across language/runtime ecosystems (multi-level fan-out, depth 2)",
   "session_key": "lead-fanout-deep",
