@@ -23,6 +23,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -564,10 +565,16 @@ You are running a multi-step research task. The steps share one session, so you 
 3. Stay strictly on the topic of the request. Do not drift into unrelated domains or generic filler.
 4. Keep each answer focused and well-structured (short headers, tight bullets). No padding.
 5. Keep context lean: NEVER paste full web-page text into an answer — extract the few facts that
-   matter plus the source URL. If you have notes/memory tools (`write`/`memory_search`/`memory_get`),
-   write each distilled finding to your notes and recall it by query later instead of restating it.
-6. For a final synthesis step, integrate ALL earlier findings from this session into a concise
-   executive summary with a clear, actionable recommendation.
+   matter plus the source URL.
+6. EXTERNALIZE MEMORY (required for shared-session multi-step research — this keeps the transcript
+   bounded no matter how many steps run). After EACH step, you MUST `write` the distilled finding
+   (the key fact + source URL) to your memory/notes. In a LATER step, do NOT restate or re-paste an
+   earlier finding inline and do NOT scroll back through the whole transcript — instead RECALL it
+   with `memory_search` (search by topic) and `memory_get` (fetch the matching note). Treat your
+   own prose in the running conversation as transient; treat memory as the durable store of record.
+7. For a final synthesis step, RECALL every earlier finding from memory via `memory_search`/
+   `memory_get` (not by re-reading the transcript or re-running searches) and integrate them into a
+   concise executive summary with a clear, actionable recommendation.
 """
 
 
@@ -587,8 +594,11 @@ You are an autonomous research assistant. Be concise, concrete, and cite sources
 - Never claim you lack internet access when a web tool is available — use it.
 - Build on earlier turns in this session; do not ask the user to repeat themselves.
 - Keep context lean: do NOT paste full fetched-page text into your reply — extract only the few
-  facts that matter plus the source URL. If you have `write`/`memory` tools, jot the distilled
-  finding to your notes and recall earlier findings with `memory_search` instead of restating them.
+  facts that matter plus the source URL.
+- EXTERNALIZE MEMORY: in shared-session multi-step research you MUST `write` each distilled finding
+  (key fact + source URL) to memory as you go, and RECALL earlier findings with `memory_search` /
+  `memory_get` instead of restating them inline. Never re-paste or re-derive a fact you already
+  saved — look it up. This keeps the transcript bounded across many steps.
 """
 
 
@@ -718,17 +728,58 @@ def _configure_context(ocfg: Dict[str, Any], env: Dict[str, str]):
     ]
     if 'tool_result_max_chars' in ctx:
         sets.append(('agents.defaults.contextLimits.toolResultMaxChars', str(int(ctx['tool_result_max_chars']))))
-    if ctx.get('memory_search_provider'):
-        sets.append(('agents.defaults.memorySearch.provider', str(ctx['memory_search_provider'])))
+    mem_provider = ctx.get('memory_search_provider')
+    if mem_provider:
+        # Layer 2 (memory externalization): set the search backend. 'none' = OpenClaw's no-egress
+        # in-process BM25 index (no key, no model download); 'local' would pull a ~0.6GB embedding
+        # model into the ephemeral Colab VM, so we keep BM25 by default.
+        sets.append(('agents.defaults.memorySearch.provider', str(mem_provider)))
+        # Setting the provider alone configures the SEARCH backend; the memory TOOLS (write/
+        # memory_search/memory_get the skill instructs the agent to call) must also be enabled, else
+        # the agent can't externalize/recall and falls back to restating findings inline. Enable the
+        # memory tool group explicitly (best-effort; key shape varies by version, so try both the
+        # group toggle and the per-tool flags — config set is idempotent and check=False).
+        sets += [
+            ('tools.memory.enabled', 'true'),
+            ('agents.defaults.memory.enabled', 'true'),
+        ]
     for key, val in sets:
         run(PATH_PREFIX + f"openclaw config set {shlex.quote(key)} {shlex.quote(val)}",
             'openclaw_context.log', check=False, env=env, timeout=60)
         applied.append(key)
     for key in ('agents.defaults.contextPruning', 'agents.defaults.compaction.reserveTokensFloor',
                 'agents.defaults.compaction.reserveTokens', 'agents.defaults.compaction.midTurnPrecheck.enabled',
-                'agents.defaults.contextLimits.toolResultMaxChars', 'agents.defaults.memorySearch.provider'):
+                'agents.defaults.contextLimits.toolResultMaxChars', 'agents.defaults.memorySearch.provider',
+                'tools.memory.enabled', 'agents.defaults.memory.enabled'):
         run(PATH_PREFIX + f"openclaw config get {shlex.quote(key)}",
             'openclaw_context.log', check=False, env=env, timeout=60)
+    return applied
+
+
+def _configure_fanout(ocfg: Dict[str, Any], env: Dict[str, str]) -> List[str]:
+    """Apply OpenClaw's multi-level subagent spawn-depth knob (gated by openclaw.fanout, so
+    smoke/legacy and single-level fan-out runs are untouched).
+
+    By default OpenClaw caps spawn depth at 1 (the LEAD spawns leaf workers, which CANNOT spawn
+    their own children). Raising it to 2 enables the orchestrator pattern: LEAD -> COORDINATOR
+    sub-agents -> leaf workers, for research trees too big for one lead to enumerate.
+
+    NOTE: the DOCUMENTED config key is `agents.defaults.subagents.maxSpawnDepth` (verified against
+    OpenClaw docs https://docs.openclaw.ai/tools/subagents — NOT the un-namespaced
+    `agents.defaults.maxSpawnDepth`). Best-effort (check=False); openclaw_fanout.log captures the
+    `config get` round-trip so the verify run sees what actually stored. Default n=1 is a no-op
+    (it's already OpenClaw's default), so we only write when max_spawn_depth > 1.
+    """
+    fan = ocfg.get('fanout') or {}
+    applied: List[str] = []
+    max_depth = int(fan.get('max_spawn_depth', 1))
+    if max_depth > 1:
+        key = 'agents.defaults.subagents.maxSpawnDepth'
+        run(PATH_PREFIX + f"openclaw config set {shlex.quote(key)} {shlex.quote(str(max_depth))}",
+            'openclaw_fanout.log', check=False, env=env, timeout=60)
+        run(PATH_PREFIX + f"openclaw config get {shlex.quote(key)}",
+            'openclaw_fanout.log', check=False, env=env, timeout=60)
+        applied.append(key)
     return applied
 
 
@@ -796,12 +847,16 @@ def configure_openclaw(config: Dict[str, Any], serve_state: Dict[str, Any]) -> D
     web_applied, identity_seeded = _configure_web_and_identity(ocfg, env)
     # Optional bounded-context settings (pruning/reserve/compaction) for long-horizon research.
     context_applied = _configure_context(ocfg, env)
+    # Optional multi-level fan-out: raise the subagent spawn-depth cap so the lead can use COORDINATOR
+    # sub-agents (each spawning its own leaf workers) for research trees too big for one lead.
+    fanout_applied = _configure_fanout(ocfg, env)
 
     run(PATH_PREFIX + 'openclaw config file', 'openclaw_config.log', check=False, env=env, timeout=60)
     run(PATH_PREFIX + 'openclaw models list --json', 'openclaw_models.log', check=False, env=env, timeout=120)
     return {'model_ref': model_ref, 'provider_id': provider_id, 'gateway_port': gateway_port,
             'gateway_token_set': bool(env['OPENCLAW_GATEWAY_TOKEN']), 'compat_applied': applied,
-            'web_applied': web_applied, 'identity_seeded': identity_seeded, 'context_applied': context_applied}
+            'web_applied': web_applied, 'identity_seeded': identity_seeded, 'context_applied': context_applied,
+            'fanout_applied': fanout_applied}
 
 
 def start_openclaw_gateway(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -989,22 +1044,19 @@ def prompt_status() -> None:
 # Phase: task (autonomous, time-consuming job — deep research), detached + polled
 # ---------------------------------------------------------------------------
 
-def _lead_synthesis_from_trajectory(session_key: str) -> Optional[str]:
-    """Recover the LEAD agent's final synthesis from OpenClaw's server-side trajectory.
+def _lead_completed_events(session_key: str) -> List[tuple]:
+    """Scan OpenClaw's live trajectory for the LEAD session's `model.completed` events.
 
-    `openclaw agent --local --json` can hang for many minutes AFTER the lead has already produced
-    its answer when subagents are spawned (the CLI does not self-exit until the children are
-    reaped), so the subprocess is killed by our timeout and never prints the `--json` payload —
-    `extract_agent_text(task_lead.log)` then finds nothing. But the runtime writes the trajectory
-    live to disk, so the synthesis survives the kill. Find the lead session's trajectory (sessionKey
-    == 'agent:main:<session_key>'; children are 'agent:main:subagent:...') and return the last
-    model.completed event's assistantTexts. Best-effort: any failure returns None."""
+    Shared detection used by both the synthesis recovery and the early-exit poll: find every
+    trajectory event with sessionKey == 'agent:main:<session_key>' (children are
+    'agent:main:subagent:...'), type == 'model.completed', and non-empty data.assistantTexts;
+    return them as (seq, text) tuples (unsorted). Best-effort: any failure returns []."""
     want = 'agent:main:' + session_key
-    best = None  # (seq, text)
+    events: List[tuple] = []
     try:
         root = Path(os.path.expanduser('~/.openclaw/agents'))
         if not root.exists():
-            return None
+            return events
         for traj in root.glob('*/sessions/*.trajectory.jsonl'):
             try:
                 lines = traj.read_text(encoding='utf-8', errors='replace').splitlines()
@@ -1023,12 +1075,25 @@ def _lead_synthesis_from_trajectory(session_key: str) -> Optional[str]:
                 texts = (ev.get('data') or {}).get('assistantTexts') or []
                 joined = "\n".join(t for t in texts if isinstance(t, str) and t.strip()).strip()
                 if joined:
-                    seq = int(ev.get('seq', 0) or 0)
-                    if best is None or seq >= best[0]:
-                        best = (seq, joined)
+                    events.append((int(ev.get('seq', 0) or 0), joined))
     except Exception:
+        return events
+    return events
+
+
+def _lead_synthesis_from_trajectory(session_key: str) -> Optional[str]:
+    """Recover the LEAD agent's final synthesis from OpenClaw's server-side trajectory.
+
+    `openclaw agent --local --json` can hang for many minutes AFTER the lead has already produced
+    its answer when subagents are spawned (the CLI does not self-exit until the children are
+    reaped), so the subprocess is killed by our timeout and never prints the `--json` payload —
+    `extract_agent_text(task_lead.log)` then finds nothing. But the runtime writes the trajectory
+    live to disk, so the synthesis survives the kill. Return the latest (highest-seq) lead
+    model.completed assistantTexts. Best-effort: any failure returns None."""
+    events = _lead_completed_events(session_key)
+    if not events:
         return None
-    return best[1] if best else None
+    return max(events, key=lambda e: e[0])[1]
 
 
 def _fanout_lead_message(steps: List[str]) -> str:
@@ -1036,20 +1101,132 @@ def _fanout_lead_message(steps: List[str]) -> str:
     ISOLATED sub-agent (sessions_spawn/sessions_yield) so raw web pages stay in the child context and
     only a distilled summary returns to the lead — the structural bounded-context fix (Layer 3)."""
     subqs = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
+    n = len(steps)
     return (
         "You are a research LEAD. Coordinate ISOLATED sub-agents so raw web pages never fill your own "
         "context. Sub-questions to answer:\n\n" + subqs + "\n\n"
-        "For EACH sub-question, in order:\n"
-        "1. Call the `sessions_spawn` tool with context:\"isolated\" and a `task` that tells the worker "
-        "to run AT MOST 2 web_search/web_fetch calls to answer that ONE sub-question and to END its "
-        "reply with a concise (<=300 token) summary containing the answer plus the exact source URL(s). "
-        "The worker must NOT loop or keep searching once it has the answer.\n"
-        "2. Then call `sessions_yield` to receive the worker's summary. Do NOT poll with sessions_list, "
-        "sessions_history, or sleep — `sessions_yield` is the waiting primitive.\n"
-        "After every worker has returned, write a FINAL Markdown answer addressing every sub-question "
-        "with its value and source URL (use a table when appropriate). Never paste raw page text — only "
-        "the distilled findings and citations."
+        # PARALLEL fan-out: spawn ALL children first (so their web searches overlap), THEN collect.
+        f"PHASE 1 — SPAWN ALL ({n} sub-questions): make {n} `sessions_spawn` calls in immediate "
+        "succession, ONE per sub-question, BEFORE calling sessions_yield even once. Do NOT spawn a "
+        "child, yield it, then spawn the next — that serializes them. Fire off every spawn first so the "
+        "workers search the web concurrently. Each `sessions_spawn` call uses context:\"isolated\" and a "
+        "`task` that tells the worker to run AT MOST 2 web_search/web_fetch calls to answer that ONE "
+        "sub-question and to END its reply with a concise (<=300 token) summary containing the answer "
+        "plus the exact source URL(s). The worker must NOT loop or keep searching once it has the answer.\n"
+        f"PHASE 2 — COLLECT ALL: only AFTER all {n} children are spawned, call `sessions_yield` "
+        f"repeatedly ({n} times) to receive each worker's summary, one yield per spawned child. Do NOT "
+        "poll with sessions_list, sessions_history, or sleep — `sessions_yield` is the waiting primitive.\n"
+        "PHASE 3 — SYNTHESIZE: after every worker has returned, write a FINAL Markdown answer addressing "
+        "every sub-question with its value and source URL (use a table when appropriate). Never paste raw "
+        "page text — only the distilled findings and citations."
     )
+
+
+def _fanout_depth_clause(max_depth: int) -> str:
+    """Extra lead instruction for MULTI-LEVEL fan-out (only when the config raised
+    agents.defaults.subagents.maxSpawnDepth above 1). Empty for depth<=1 so the single-level
+    fan-out prompt is byte-identical to before. When there are many sub-questions, the lead MAY
+    insert a COORDINATOR tier: spawn a few isolated coordinators, each owning a slice of the
+    sub-questions and itself using sessions_spawn/sessions_yield to delegate to leaf workers — so
+    every level stays context-bounded (no level ever holds all the raw pages)."""
+    if max_depth <= 1:
+        return ""
+    return (
+        "\n\nOPTIONAL MULTI-LEVEL FAN-OUT (allowed: spawn depth up to " + str(int(max_depth)) + "): "
+        "if there are MANY sub-questions, you MAY instead spawn a SMALL number (2-3) of COORDINATOR "
+        "sub-agents with context:\"isolated\", giving each coordinator a SLICE of the sub-questions. "
+        "Instruct each coordinator to itself use `sessions_spawn` (context:\"isolated\") to delegate "
+        "each of its sub-questions to a leaf worker and `sessions_yield` to collect those summaries, "
+        "then return ONLY a distilled, cited summary of its whole slice to you. This keeps EVERY "
+        "level context-bounded — no single agent ever holds all the raw pages. For a handful of "
+        "sub-questions, spawning leaf workers directly (as above) is still fine."
+    )
+
+
+def _run_lead_with_early_exit(cmd: str, session_key: str, hard_timeout: int, log_name: str,
+                              env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Run the fan-out LEAD CLI but stop as soon as it has finished its synthesis.
+
+    `openclaw agent --local --json` keeps the process alive for many minutes AFTER the lead has
+    already produced its final answer once subagents are spawned (it doesn't self-exit until the
+    children are reaped), so blocking on it to `hard_timeout` wastes up to ~8 min/run. Instead we
+    launch it detached in its own process group and POLL the live trajectory for the lead's
+    `model.completed` synthesis (the SAME detection `_lead_synthesis_from_trajectory` uses), then
+    kill the group once the lead is done.
+
+    Done heuristic: once a lead model.completed event exists, wait one more poll (~5s) and confirm
+    no NEWER lead model.completed appeared (max seq unchanged) — i.e. the lead isn't mid-followup
+    turn — before terminating. `hard_timeout` is the fallback cap. Returns {"returncode": 0} on
+    early/clean exit (or natural CLI exit), {"returncode": 124} if the cap elapses first — shaped
+    like `run()`'s result so the caller can keep reading r["returncode"]."""
+    poll_s = 5
+    log_path = RESULTS / log_name
+    append(log_path, f"\n[{now()}] $ {cmd}\n")
+    # Same env merge as run(): start from the process env, overlay the caller's oc_env() overrides.
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+    proc = subprocess.Popen(cmd, shell=True, executable='/bin/bash',
+                            stdout=log_path.open('a', encoding='utf-8'),
+                            stderr=subprocess.STDOUT, start_new_session=True, env=merged_env)
+    deadline = time.time() + hard_timeout
+    confirm_seq: Optional[int] = None  # max lead seq seen on the previous poll once one exists
+    try:
+        while True:
+            # Natural exit (lead self-exited, or crashed): honor whatever it did.
+            if proc.poll() is not None:
+                return {'returncode': 0 if proc.returncode == 0 else proc.returncode}
+            if time.time() >= deadline:
+                break  # hard cap -> fall through to kill + rc=124
+            events = _lead_completed_events(session_key)
+            if events:
+                max_seq = max(e[0] for e in events)
+                # Require two consecutive polls with the SAME max seq: the first poll proves a lead
+                # synthesis exists, the second proves the lead isn't producing a newer turn (so we
+                # don't kill it between an intermediate completion and its real final answer).
+                if confirm_seq is not None and max_seq <= confirm_seq:
+                    append(log_path, f"[{now()}] early-exit: lead synthesis stable at seq {max_seq}\n")
+                    break
+                confirm_seq = max_seq
+            time.sleep(poll_s)
+    except Exception as exc:
+        append(log_path, f"[{now()}] early-exit poll error: {exc!r}\n")
+    finally:
+        _kill_process_group(proc)
+    timed_out = time.time() >= deadline and confirm_seq is None
+    return {'returncode': 124 if timed_out else 0}
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """Best-effort SIGTERM the detached lead's whole process group, then SIGKILL after a grace.
+
+    The lead spawns subagent children in the same group (start_new_session=True), so killing the
+    group reaps them too instead of leaving orphaned CLIs holding the model busy."""
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=10)  # short grace for graceful shutdown
+        return
+    except Exception:
+        pass
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:
+        pass
 
 
 def task() -> None:
@@ -1092,8 +1269,17 @@ def _task_run() -> None:
             # stay in the child context; only distilled summaries return. Single long turn (no Python
             # poll loop — the lead uses sessions_yield), so give it the whole budget.
             lead_to = int(task_cfg.get('lead_timeout_seconds', total_budget))
-            r = run(_agent_cmd(model_ref, _fanout_lead_message(steps), session_key, lead_to),
-                    'task_lead.log', check=False, env=env, timeout=lead_to + 120)
+            # Multi-level depth: when the config raised agents.defaults.subagents.maxSpawnDepth (>1),
+            # append a clause permitting an intermediate COORDINATOR tier. _fanout_depth_clause is "" at
+            # depth<=1, so the single-level lead prompt stays byte-identical.
+            max_depth = int(config.get('openclaw', {}).get('fanout', {}).get('max_spawn_depth', 1))
+            message = _fanout_lead_message(steps) + _fanout_depth_clause(max_depth)
+            # Don't block on the lead CLI to its hard cap: it hangs ~20 min past producing its answer
+            # once subagents are spawned. Poll the trajectory and kill the group once the synthesis
+            # is stable; lead_to stays the fallback cap (rc 124). r["returncode"] read as before.
+            r = _run_lead_with_early_exit(
+                _agent_cmd(model_ref, message, session_key, lead_to),
+                session_key, lead_to, 'task_lead.log', env=env)
             raw = (RESULTS / 'task_lead.log').read_text(encoding='utf-8', errors='replace')
             text = extract_agent_text(raw)
             source = 'cli-json'

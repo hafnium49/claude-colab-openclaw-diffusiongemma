@@ -1,0 +1,54 @@
+{
+  "_comment": "Layer-2 MEMORY-EXTERNALIZATION deep research: LFM2.5-8B-A1B via Ollama on a T4. Same bounded-context openclaw.context block as lfm2_ollama_research.json (Layer-1 pruning), but here the lever is Layer 2: the agent is instructed (DEEP_RESEARCH_SKILL + LEAN_AGENTS_MD) to WRITE each distilled finding to memory and RECALL earlier findings via memory_search/memory_get instead of restating them inline — so the SHARED-SESSION transcript stays bounded no matter how many steps accumulate. memory_search_provider is 'none' = OpenClaw's no-egress in-process BM25 index (no network, no key); we deliberately do NOT use 'local' because that pulls a ~0.6GB embedding model into the ephemeral Colab VM. Run with examples/web_research_memory.json (mode research, shared-session, several accumulating steps). See memory: openclaw-context-bestpractice.",
+  "model": {
+    "id": "lfm2.5:8b"
+  },
+  "serve": {
+    "backend": "ollama",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 900,
+    "ollama": {
+      "num_ctx": 32768,
+      "install_timeout_seconds": 900,
+      "download_timeout_seconds": 1800
+    }
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": true,
+      "maxTokens": 2048,
+      "contextWindow": 32768
+    },
+    "web": {
+      "enabled": true,
+      "provider": "brave",
+      "plugin_package": "@openclaw/brave-plugin",
+      "max_results": 3,
+      "code_mode": false,
+      "lean_workspace": true
+    },
+    "identity": {
+      "name": "Hiroki"
+    },
+    "context": {
+      "enabled": true,
+      "pruning": {
+        "enabled": true,
+        "mode": "cache-ttl",
+        "ttl": "5m",
+        "min_prunable_tool_chars": 4000
+      },
+      "reserve_tokens_floor": 0,
+      "reserve_tokens": 4096,
+      "compaction_mode": "safeguard",
+      "mid_turn_precheck": true,
+      "tool_result_max_chars": 6000,
+      "memory_search_provider": "none"
+    }
+  }
+}
