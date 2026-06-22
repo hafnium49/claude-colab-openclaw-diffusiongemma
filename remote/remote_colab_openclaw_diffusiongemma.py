@@ -1178,6 +1178,123 @@ def _fanout_depth_clause(max_depth: int) -> str:
     )
 
 
+def _fanout_lead_message_multilevel(steps: List[str], max_depth: int) -> str:
+    """Lead-agent prompt for MULTI-LEVEL (depth>=2) subagent fan-out.
+
+    Replaces (does NOT append to) the flat lead prompt when the config raised
+    agents.defaults.subagents.maxSpawnDepth above 1 AND there are enough sub-questions
+    (>=4) to warrant a COORDINATOR tier. The flat prompt let DiffusionGemma spawn leaves
+    directly and skip coordinators because that tier was only an OPTIONAL "you MAY instead"
+    addendum; the strong base instruction won. Here the LEAD->COORDINATOR->leaf tree is the
+    ONLY sanctioned shape and there is no competing flat instruction.
+
+    The sub-questions are pre-partitioned in Python into G balanced contiguous coordinator
+    GROUPS, and the EXACT verbatim `task` string for each coordinator is embedded so the model
+    only COPIES a known-good string into sessions_spawn rather than inventing structure (the
+    single highest-leverage lever against a model that ignores soft guidance). Each coordinator
+    task itself drives its leaf spawns -> that is what actually produces the third tier;
+    maxSpawnDepth>=2 merely permits it. Context stays bounded: raw pages live only in leaves,
+    coordinators return short cited summaries, and the lead sees only the G coordinator summaries
+    before emitting one final cited table.
+    """
+    n = len(steps)
+    md = int(max_depth)
+
+    # ~3 sub-questions per coordinator; clamp G to 2..4 and never exceed n.
+    # Integer ceil(n/3) without a math import == (n + 2) // 3.
+    g = (n + 2) // 3
+    if g < 2:
+        g = 2
+    if g > 4:
+        g = 4
+    if g > n:
+        g = n
+
+    # Contiguous balanced partition: the first (n % g) groups get one extra sub-question.
+    base = n // g
+    rem = n % g
+    groups = []  # type: List[List[int]]
+    pos = 0
+    for gi in range(g):
+        size = base + (1 if gi < rem else 0)
+        groups.append([pos + 1 + k for k in range(size)])
+        pos += size
+
+    # Full master list for the lead's reference ONLY (clearly labelled so it is not mistaken
+    # for the work list and answered inline).
+    master = "\n".join("%d. %s" % (i, s) for i, s in enumerate(steps, 1))
+
+    # Plain BEGIN-TASK / END-TASK markers (no angle brackets) so the model does not confuse
+    # them with tool-call or XML syntax. The embedded coordinator strings use only single
+    # quotes / parentheses and NO double quotes, so they drop into a JSON `task` field cleanly.
+    blocks = []
+    assign_rows = []
+    for gi, idxs in enumerate(groups, 1):
+        m = len(idxs)
+        sub_lines = "\n".join("  %d. %s" % (j, steps[j - 1]) for j in idxs)
+        nums = ", ".join(str(j) for j in idxs)
+        assign_rows.append("  - COORDINATOR-%d owns sub-question(s): %s" % (gi, nums))
+        coord_task = (
+            "You are COORDINATOR-%d of %d, a research sub-manager. You own EXACTLY %d "
+            "sub-question(s):\n%s\n"
+            "PROTOCOL (follow in order; do NOT deviate):\n"
+            "1. Do NOT call web_search or web_fetch yourself, and do NOT answer from memory. "
+            "You delegate ONLY.\n"
+            "2. SPAWN: make EXACTLY %d sessions_spawn call(s) in immediate succession, ONE per "
+            "sub-question above, each with context isolated, BEFORE any sessions_yield. Each "
+            "spawned LEAF worker's task must instruct it to run AT MOST 2 web_search/web_fetch "
+            "calls to answer that ONE sub-question, then END with a concise (<=200 token) summary "
+            "giving the answer plus the exact source URL(s), and to STOP (no looping).\n"
+            "3. COLLECT: only AFTER all %d leaf workers are spawned, call sessions_yield EXACTLY "
+            "%d time(s) to receive each leaf summary. Do NOT poll, sleep, or use sessions_list/"
+            "sessions_history -- sessions_yield is the wait primitive.\n"
+            "4. RETURN: reply with ONLY a short cited summary, one line per sub-question giving "
+            "its number, its answer, and the source URL. Do NOT paste raw page text and do NOT "
+            "spawn further coordinators."
+            % (gi, g, m, sub_lines, m, m, m)
+        )
+        blocks.append(
+            "COORDINATOR-%d -- make ONE sessions_spawn call with context isolated, "
+            "taskName \"coordinator-%d\", and `task` set to the EXACT string between the "
+            "BEGIN-TASK and END-TASK marker lines below (copy it verbatim; the marker lines "
+            "themselves are NOT part of the task):\n"
+            "BEGIN-TASK\n%s\nEND-TASK"
+            % (gi, gi, coord_task)
+        )
+
+    assignment = "\n".join(assign_rows)
+    coord_blocks = "\n\n".join(blocks)
+
+    return (
+        "You are the research LEAD (a delegation MANAGER) running a MANDATORY 3-level fan-out "
+        "(spawn depth up to %d): LEAD -> COORDINATOR -> leaf worker. This structure is REQUIRED, "
+        "not optional. You DELEGATE; you do not research.\n\n"
+        "The full list of %d sub-questions is shown below FOR YOUR REFERENCE ONLY -- do NOT "
+        "answer any of them yourself:\n\n%s\n\n"
+        "HARD RULES (violating ANY of these is a failure):\n"
+        "- Do NOT call web_search or web_fetch yourself -- not even once.\n"
+        "- Do NOT answer any sub-question from memory.\n"
+        "- Do NOT spawn leaf/worker sub-agents directly. You spawn ONLY coordinators.\n"
+        "- You will spawn EXACTLY %d coordinator(s) -- no more, no fewer.\n"
+        "- Do NOT rewrite, merge, or re-partition the sub-questions, and do NOT edit the "
+        "coordinator task strings -- paste each one VERBATIM.\n\n"
+        "This FIXED partition assigns each sub-question to exactly one coordinator (do not "
+        "change it):\n%s\n\n"
+        "PHASE 1 -- SPAWN EXACTLY %d COORDINATOR(S): make %d sessions_spawn call(s) in immediate "
+        "succession (BEFORE any sessions_yield), one per block below, each using context isolated "
+        "and the EXACT pre-written task string copied verbatim into the `task` field. Fire all %d "
+        "spawns first so the coordinators work concurrently. The blocks are:\n\n%s\n\n"
+        "PHASE 2 -- COLLECT: only AFTER all %d coordinators are spawned, call sessions_yield "
+        "EXACTLY %d time(s) -- one per coordinator -- to receive each coordinator's short cited "
+        "summary. sessions_yield BLOCKS until a child finishes; never poll or sleep.\n"
+        "PHASE 3 -- SYNTHESIZE: after all %d coordinators have returned, write a FINAL cited "
+        "Markdown TABLE with a row for EVERY one of the %d sub-questions: columns = sub-question, "
+        "answer/value, source URL. Use ONLY the coordinators' summaries -- never paste raw page "
+        "text and never run any search yourself."
+        % (md, n, master, g, assignment, g, g, g, coord_blocks, g, g, g, n)
+    )
+
+
 def _trajectory_fingerprint() -> tuple:
     """(latest mtime, total size) across all lead+child trajectory files — a cheap "has anything
     been written lately?" probe for the early-exit silence check. A stable fingerprint over a
@@ -1331,11 +1448,16 @@ def _task_run() -> None:
             # stay in the child context; only distilled summaries return. Single long turn (no Python
             # poll loop — the lead uses sessions_yield), so give it the whole budget.
             lead_to = int(task_cfg.get('lead_timeout_seconds', total_budget))
-            # Multi-level depth: when the config raised agents.defaults.subagents.maxSpawnDepth (>1),
-            # append a clause permitting an intermediate COORDINATOR tier. _fanout_depth_clause is "" at
-            # depth<=1, so the single-level lead prompt stays byte-identical.
+            # Multi-level (depth>=2) fan-out: when the config raised maxSpawnDepth (>1) AND there are
+            # enough sub-questions to warrant a coordinator tier (>=4), use the PRESCRIPTIVE multilevel
+            # prompt (LEAD -> COORDINATOR -> leaf, with verbatim pre-written coordinator task strings —
+            # DiffusionGemma ignored the old OPTIONAL "you MAY" clause and spawned flat). Otherwise fall
+            # back to the flat single-level prompt, so the depth<=1 / small-N path stays byte-identical.
             max_depth = int(config.get('openclaw', {}).get('fanout', {}).get('max_spawn_depth', 1))
-            message = _fanout_lead_message(steps) + _fanout_depth_clause(max_depth)
+            if max_depth > 1 and len(steps) >= 4:
+                message = _fanout_lead_message_multilevel(steps, max_depth)
+            else:
+                message = _fanout_lead_message(steps) + _fanout_depth_clause(max_depth)
             # Don't block on the lead CLI to its hard cap: it hangs ~20 min past producing its answer
             # once subagents are spawned. Poll the trajectory and kill the group once the synthesis
             # is stable; lead_to stays the fallback cap (rc 124). r["returncode"] read as before.
