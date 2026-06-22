@@ -1,5 +1,5 @@
 {
-  "_comment": "Layer-2 MEMORY-EXTERNALIZATION stress test: SHARED-SESSION deep research where each step adds a NEW fact the final step must integrate, so the transcript would grow unbounded if findings were restated inline. With configs/lfm2_ollama_memory.json the agent is instructed to WRITE each distilled finding to memory and RECALL prior ones via memory_search/memory_get (Layer 2) on top of Layer-1 pruning — so the shared session stays bounded across many accumulating steps. orchestration is 'shared-session' (default; stated explicitly): one session across all steps, NO subagent fan-out. Step 1 checks USER.md identity; each web step says to SAVE the finding to memory; the final step says to RECALL via memory_search rather than re-reading the transcript. Run: --gpu T4 --config configs/lfm2_ollama_memory.json. Needs BRAVE_API_KEY in ~/.env.",
+  "_comment": "Layer-2 MEMORY-EXTERNALIZATION test (FIXED 2026-06-22): SHARED-SESSION deep research where each step saves a NEW fact the final step must RECALL. With configs/lfm2_ollama_memory.json the agent saves each finding as a markdown note memory/<slug>.md (ONLY memory/*.md is indexed into the per-agent SQLite FTS DB; a file without .md is invisible to memory_search \u2014 that was the Run C failure) and recalls via memory_search/memory_get, on top of Layer-1 pruning, so the shared session stays bounded. orchestration 'shared-session' (default): one session across all steps, NO subagent fan-out. Run: --gpu T4 --config configs/lfm2_ollama_memory.json. Needs BRAVE_API_KEY in ~/.env.",
   "mode": "research",
   "orchestration": "shared-session",
   "transport": "local",
@@ -9,10 +9,10 @@
   "session_key": "memory-research",
   "steps": [
     "What is my name? Answer in one short sentence, addressing me by name.",
-    "Use your web_search tool to find the current latest stable version of Python from python.org. Give the exact version number and the source URL, then SAVE that finding to memory (e.g. with the write/memory tool) so you can recall it later without restating it here.",
-    "Use web_search to find the current latest LTS version of Node.js from nodejs.org. Give the exact version number and the source URL, then SAVE that finding to memory.",
-    "Use web_search to find the current latest stable version of Go from go.dev. Give the exact version number and the source URL, then SAVE that finding to memory.",
-    "Use web_search to find the current latest stable version of Rust from rust-lang.org. Give the exact version number and the source URL, then SAVE that finding to memory.",
+    "Use your web_search tool to find the current latest stable version of Python from python.org. Give the exact version number and the source URL, then SAVE that finding by writing a markdown note to memory/python-version.md (the memory/ folder AND the .md extension are REQUIRED so it gets indexed for later recall).",
+    "Use web_search to find the current latest LTS version of Node.js from nodejs.org. Give the exact version number and the source URL, then SAVE it as memory/nodejs-version.md.",
+    "Use web_search to find the current latest stable version of Go from go.dev. Give the exact version number and the source URL, then SAVE it as memory/go-version.md.",
+    "Use web_search to find the current latest stable version of Rust from rust-lang.org. Give the exact version number and the source URL, then SAVE it as memory/rust-version.md.",
     "RECALL the four findings you saved earlier using memory_search/memory_get (do NOT re-run web_search and do NOT scroll back through the transcript), then synthesize them into one Markdown table with columns: Language | Latest version | Source URL. Include Python, Node.js, Go, and Rust."
   ]
 }

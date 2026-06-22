@@ -568,10 +568,12 @@ You are running a multi-step research task. The steps share one session, so you 
    matter plus the source URL.
 6. EXTERNALIZE MEMORY (required for shared-session multi-step research — this keeps the transcript
    bounded no matter how many steps run). After EACH step, you MUST `write` the distilled finding
-   (the key fact + source URL) to your memory/notes. In a LATER step, do NOT restate or re-paste an
-   earlier finding inline and do NOT scroll back through the whole transcript — instead RECALL it
-   with `memory_search` (search by topic) and `memory_get` (fetch the matching note). Treat your
-   own prose in the running conversation as transient; treat memory as the durable store of record.
+   (the key fact + source URL) to a markdown note file at `memory/<short-slug>.md` (for example
+   `memory/python-version.md`). The `memory/` folder AND the `.md` extension are REQUIRED — only
+   `memory/*.md` notes are indexed for search; a file without `.md` is invisible to recall. In a
+   LATER step, do NOT restate or re-paste an earlier finding inline and do NOT scroll back through
+   the whole transcript — instead RECALL it with `memory_search` (search by topic) and `memory_get`
+   (fetch the matching note). Treat your own prose as transient; treat memory as the store of record.
 7. For a final synthesis step, RECALL every earlier finding from memory via `memory_search`/
    `memory_get` (not by re-reading the transcript or re-running searches) and integrate them into a
    concise executive summary with a clear, actionable recommendation.
@@ -596,9 +598,10 @@ You are an autonomous research assistant. Be concise, concrete, and cite sources
 - Keep context lean: do NOT paste full fetched-page text into your reply — extract only the few
   facts that matter plus the source URL.
 - EXTERNALIZE MEMORY: in shared-session multi-step research you MUST `write` each distilled finding
-  (key fact + source URL) to memory as you go, and RECALL earlier findings with `memory_search` /
-  `memory_get` instead of restating them inline. Never re-paste or re-derive a fact you already
-  saved — look it up. This keeps the transcript bounded across many steps.
+  (key fact + source URL) to a markdown note `memory/<short-slug>.md` (the `memory/` folder and the
+  `.md` extension are REQUIRED — only `memory/*.md` is indexed for search), and RECALL earlier
+  findings with `memory_search` / `memory_get` instead of restating them inline. Never re-paste or
+  re-derive a fact you already saved — look it up. This keeps the transcript bounded across steps.
 """
 
 
@@ -733,15 +736,16 @@ def _configure_context(ocfg: Dict[str, Any], env: Dict[str, str]):
         # Layer 2 (memory externalization): set the search backend. 'none' = OpenClaw's no-egress
         # in-process BM25 index (no key, no model download); 'local' would pull a ~0.6GB embedding
         # model into the ephemeral Colab VM, so we keep BM25 by default.
-        sets.append(('agents.defaults.memorySearch.provider', str(mem_provider)))
-        # Setting the provider alone configures the SEARCH backend; the memory TOOLS (write/
-        # memory_search/memory_get the skill instructs the agent to call) must also be enabled, else
-        # the agent can't externalize/recall and falls back to restating findings inline. Enable the
-        # memory tool group explicitly (best-effort; key shape varies by version, so try both the
-        # group toggle and the per-tool flags — config set is idempotent and check=False).
+        # provider sets the SEARCH backend; enabled:true turns memory search on. CRITICAL: memory_search
+        # only finds notes saved as MEMORY.md / memory/*.md (markdown -> per-agent SQLite FTS index,
+        # 1.5s debounced reindex), so the skill + task instruct the agent to save findings exactly
+        # there with a .md extension. (The earlier tools.memory.enabled / agents.defaults.memory.enabled
+        # keys were INVALID — config validation rejected them — and unnecessary; the memory tools are on
+        # by default. Run C 2026-06-22: the agent wrote memory/<name> with NO .md, so nothing indexed
+        # and recall returned empty.)
         sets += [
-            ('tools.memory.enabled', 'true'),
-            ('agents.defaults.memory.enabled', 'true'),
+            ('agents.defaults.memorySearch.provider', str(mem_provider)),
+            ('agents.defaults.memorySearch.enabled', 'true'),
         ]
     for key, val in sets:
         run(PATH_PREFIX + f"openclaw config set {shlex.quote(key)} {shlex.quote(val)}",
@@ -750,7 +754,7 @@ def _configure_context(ocfg: Dict[str, Any], env: Dict[str, str]):
     for key in ('agents.defaults.contextPruning', 'agents.defaults.compaction.reserveTokensFloor',
                 'agents.defaults.compaction.reserveTokens', 'agents.defaults.compaction.midTurnPrecheck.enabled',
                 'agents.defaults.contextLimits.toolResultMaxChars', 'agents.defaults.memorySearch.provider',
-                'tools.memory.enabled', 'agents.defaults.memory.enabled'):
+                'agents.defaults.memorySearch.enabled'):
         run(PATH_PREFIX + f"openclaw config get {shlex.quote(key)}",
             'openclaw_context.log', check=False, env=env, timeout=60)
     return applied
