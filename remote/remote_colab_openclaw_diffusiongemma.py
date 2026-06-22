@@ -105,7 +105,14 @@ def run(cmd: str, log_name: str, check: bool = False, env: Optional[Dict[str, st
         )
         rc, out = proc.returncode, proc.stdout
     except subprocess.TimeoutExpired as exc:
-        rc, out = 124, (exc.output or '') + f"\n[timeout after {timeout}s]"
+        # With text=True, TimeoutExpired.output can still come back as undecoded bytes (a CPython
+        # quirk — communicate() on timeout returns the raw buffer), so decode defensively. Without
+        # this the timeout path raises TypeError("can't concat str to bytes") and loses the whole
+        # phase instead of recording rc=124 + partial output.
+        partial = exc.output
+        if isinstance(partial, (bytes, bytearray)):
+            partial = partial.decode('utf-8', 'replace')
+        rc, out = 124, (partial or '') + f"\n[timeout after {timeout}s]"
     append(log_path, out)
     result = {'cmd': cmd, 'returncode': rc, 'log': str(log_path)}
     if check and rc != 0:
@@ -982,6 +989,48 @@ def prompt_status() -> None:
 # Phase: task (autonomous, time-consuming job — deep research), detached + polled
 # ---------------------------------------------------------------------------
 
+def _lead_synthesis_from_trajectory(session_key: str) -> Optional[str]:
+    """Recover the LEAD agent's final synthesis from OpenClaw's server-side trajectory.
+
+    `openclaw agent --local --json` can hang for many minutes AFTER the lead has already produced
+    its answer when subagents are spawned (the CLI does not self-exit until the children are
+    reaped), so the subprocess is killed by our timeout and never prints the `--json` payload —
+    `extract_agent_text(task_lead.log)` then finds nothing. But the runtime writes the trajectory
+    live to disk, so the synthesis survives the kill. Find the lead session's trajectory (sessionKey
+    == 'agent:main:<session_key>'; children are 'agent:main:subagent:...') and return the last
+    model.completed event's assistantTexts. Best-effort: any failure returns None."""
+    want = 'agent:main:' + session_key
+    best = None  # (seq, text)
+    try:
+        root = Path(os.path.expanduser('~/.openclaw/agents'))
+        if not root.exists():
+            return None
+        for traj in root.glob('*/sessions/*.trajectory.jsonl'):
+            try:
+                lines = traj.read_text(encoding='utf-8', errors='replace').splitlines()
+            except Exception:
+                continue
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                if ev.get('sessionKey') != want or ev.get('type') != 'model.completed':
+                    continue
+                texts = (ev.get('data') or {}).get('assistantTexts') or []
+                joined = "\n".join(t for t in texts if isinstance(t, str) and t.strip()).strip()
+                if joined:
+                    seq = int(ev.get('seq', 0) or 0)
+                    if best is None or seq >= best[0]:
+                        best = (seq, joined)
+    except Exception:
+        return None
+    return best[1] if best else None
+
+
 def _fanout_lead_message(steps: List[str]) -> str:
     """Lead-agent prompt for orchestration='subagent-fanout': delegate each sub-question to an
     ISOLATED sub-agent (sessions_spawn/sessions_yield) so raw web pages stay in the child context and
@@ -1047,10 +1096,17 @@ def _task_run() -> None:
                     'task_lead.log', check=False, env=env, timeout=lead_to + 120)
             raw = (RESULTS / 'task_lead.log').read_text(encoding='utf-8', errors='replace')
             text = extract_agent_text(raw)
+            source = 'cli-json'
+            if text is None:
+                # The --local agent CLI commonly hangs past producing its answer once subagents are
+                # spawned (it does not self-exit until children are reaped) → killed by timeout with
+                # no --json on stdout. Recover the lead's synthesis from the live trajectory.
+                text = _lead_synthesis_from_trajectory(session_key)
+                source = 'trajectory' if text else 'none'
             got = text is not None
             append(out_md, f"\n## Lead synthesis (subagent fan-out)\n\n{text if got else '(no text returned)'}\n")
             step_results.append({'step': 1, 'returncode': r['returncode'], 'got_text': got,
-                                 'chars': len(text) if got else 0})
+                                 'source': source, 'chars': len(text) if got else 0})
             write_status(TASK_STATUS_PATH, 'running', {'completed_steps': 1, 'total_steps': 1})
         else:
             for i, step in enumerate(steps, 1):
@@ -1068,7 +1124,13 @@ def _task_run() -> None:
         manifest['task'] = {'mode': task_cfg.get('mode', 'research'), 'engine': 'openclaw-agent',
                             'orchestration': orchestration, 'session_key': session_key,
                             'steps': step_results, 'result_file': 'research_result.md'}
-        manifest['ok'] = bool(step_results) and all(s['returncode'] == 0 and s['got_text'] for s in step_results)
+        if orchestration == 'subagent-fanout':
+            # Judge the fan-out lead on whether its synthesis was captured: the CLI returncode is
+            # often 124 from the known post-answer hang, while the text is recovered from the
+            # trajectory — so a non-zero rc must NOT fail an otherwise-complete run.
+            manifest['ok'] = bool(step_results) and all(s.get('got_text') for s in step_results)
+        else:
+            manifest['ok'] = bool(step_results) and all(s['returncode'] == 0 and s['got_text'] for s in step_results)
     except Exception as exc:
         manifest['ok'] = False
         manifest['error'] = repr(exc)

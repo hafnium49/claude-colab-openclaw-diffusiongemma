@@ -1,15 +1,14 @@
 {
-  "_comment": "Layer 3 subagent FAN-OUT verify. orchestration='subagent-fanout' makes ONE lead agent delegate each sub-question to an ISOLATED sub-agent (sessions_spawn -> sessions_yield) so raw web pages stay in the child context and only a distilled summary returns to the lead — the STRUCTURAL bounded-context fix (vs Layer-1 pruning which trims in place). The 'steps' are the sub-question topics the lead fans out; the lead wraps them with the sessions_spawn/yield instructions. Use with configs/lfm2_ollama_research.json on a T4. Probe confirmed sessions_spawn/subagents are in the --local agent catalog.",
+  "_comment": "Layer 3 subagent FAN-OUT verify (TIGHTENED for L4). orchestration='subagent-fanout' makes ONE lead agent delegate each sub-question to an ISOLATED sub-agent (sessions_spawn -> sessions_yield) so raw web pages stay in the child context and only a distilled summary returns to the lead — the STRUCTURAL bounded-context fix (vs Layer-1 pruning which trims in place). VERIFIED 2026-06-22 on L4/DiffusionGemma: lead spawned 2 isolated children, each ran real Brave web_search/web_fetch, raw pages stayed in children, lead synthesized a clean cited table (Python 3.14.6 / Node v24.15.0) in ~47s with compactionCount 0. timeout_seconds is intentionally SHORT (420s): the answer lands in <1 min, but `openclaw agent --local --json` then HANGS until killed (it doesn't self-exit while subagent children are reaped), so the remote recovers the synthesis from the server-side trajectory (_lead_synthesis_from_trajectory) instead of waiting for the CLI. Per-worker <=2 web_search/web_fetch cap lives in remote _fanout_lead_message. Launcher poll budget = step_timeout_seconds*steps+600 = 2000s > lead kill (timeout_seconds 420 + 120). Run: --gpu L4 --config configs/diffusiongemma_research.json.",
   "mode": "research",
   "orchestration": "subagent-fanout",
   "transport": "local",
-  "timeout_seconds": 3000,
+  "timeout_seconds": 420,
   "step_timeout_seconds": 700,
-  "topic": "Latest stable versions (subagent fan-out)",
+  "topic": "Latest stable versions (subagent fan-out, tightened)",
   "session_key": "lead-fanout",
   "steps": [
     "the current latest stable version of Python (from python.org)",
-    "the current latest LTS version of Node.js (from nodejs.org)",
-    "the current latest stable version of Go (from go.dev)"
+    "the current latest LTS version of Node.js (from nodejs.org)"
   ]
 }
