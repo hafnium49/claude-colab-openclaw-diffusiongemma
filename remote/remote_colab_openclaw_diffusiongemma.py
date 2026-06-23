@@ -1355,9 +1355,12 @@ def _run_lead_with_early_exit(cmd: str, session_key: str, hard_timeout: int, log
     {"returncode": 124} if the cap elapses with no terminal synthesis — shaped like `run()`'s result
     so the caller can keep reading r["returncode"]."""
     poll_s = 5
-    silence_s = 75   # sustained trajectory quiet that means no child is still working and no further
-                     # announce-driven lead cycle is coming. Must exceed a child's slowest search +
-                     # the lead's inter-cycle think time, else an early cycle would truncate the run.
+    silence_s = int(os.environ.get('OCDG_EARLYEXIT_SILENCE_S', '180'))  # sustained trajectory quiet
+                     # that means no child is still working and no further announce-driven lead cycle is
+                     # coming. Must EXCEED the slowest single agent turn: a MULTI-LEVEL tree (lead ->
+                     # coordinator -> leaf) on slow DiffusionGemma had >75s gaps mid-orchestration, so a
+                     # short window killed it on an intermediate "waiting for coordinator-2..." turn
+                     # (verified 2026-06-23). 180s default; override via OCDG_EARLYEXIT_SILENCE_S.
     log_path = RESULTS / log_name
     append(log_path, f"\n[{now()}] $ {cmd}\n")
     # Same env merge as run(): start from the process env, overlay the caller's oc_env() overrides.
