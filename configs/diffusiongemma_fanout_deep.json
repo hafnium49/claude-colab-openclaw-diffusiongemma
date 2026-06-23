@@ -1,5 +1,5 @@
 {
-  "_comment": "DiffusionGemma 26B-A4B-NVFP4 on L4 + Layer-3 MULTI-LEVEL fan-out (openclaw.fanout.max_spawn_depth=2 -> remote runs `openclaw config set agents.defaults.subagents.maxSpawnDepth 2` and appends a coordinator-tier clause to the lead prompt). Use with examples/web_research_fanout_deep.json (6 sub-questions) so the LEAD may spawn 2-3 ISOLATED coordinators, each delegating its slice to leaf workers (LEAD->COORDINATOR->leaf), every level context-bounded. Same vLLM gemma4 native tool_calls + Layer-1 pruning as diffusiongemma_research.json. BRAVE_API_KEY forwarded from ~/.env. Run: --gpu L4 --config configs/diffusiongemma_fanout_deep.json --task examples/web_research_fanout_deep.json.",
+  "_comment": "DiffusionGemma 26B-A4B-NVFP4 on L4 + Layer-3 MULTI-LEVEL fan-out (openclaw.fanout.max_spawn_depth=2 -> remote runs `openclaw config set agents.defaults.subagents.maxSpawnDepth 2` and appends a coordinator-tier clause to the lead prompt). Use with examples/web_research_fanout_deep.json (6 sub-questions) so the LEAD may spawn 2-3 ISOLATED coordinators, each delegating its slice to leaf workers (LEAD->COORDINATOR->leaf), every level context-bounded. Same vLLM gemma4 native tool_calls + Layer-1 pruning as diffusiongemma_research.json. BRAVE_API_KEY forwarded from ~/.env. Run: --gpu L4 --config configs/diffusiongemma_fanout_deep.json --task examples/web_research_fanout_deep.json. NOTE: --max-num-seqs raised 1->4 so vLLM BATCHES concurrent agent turns (the LEAD->COORDINATOR->leaf tree has ~9 agents; at max-num-seqs 1 they serialize on one GPU slot and the 6-question tree times out). Paged KV shares the pool, so 4-way batching should fit the 26B-NVFP4 on a 24GB L4.",
   "model": {
     "id": "RedHatAI/diffusiongemma-26B-A4B-it-NVFP4",
     "name": "DiffusionGemma 26B-A4B IT NVFP4",
@@ -22,7 +22,7 @@
     "serve_args": [
       "--trust-remote-code",
       "--max-num-seqs",
-      "1",
+      "4",
       "--gpu-memory-utilization",
       "0.90",
       "--max-model-len",
