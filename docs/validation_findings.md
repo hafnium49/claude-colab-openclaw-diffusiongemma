@@ -278,16 +278,41 @@ exist on the ephemeral loopback VM. What was KEPT vs DROPPED, and the harness-al
 Design was produced via a 4-design judge panel → synthesis → adversarial review; the review's fixes (split
 PACKAGE so no step exceeds one section; same-turn-vs-earlier-turn memory recall timing; fan-out LEAD
 reworded from a "do NOT spawn" prohibition to a deference framing; bounded per-turn thinking) are folded in.
-**Status: `self_test` GREEN; a live L4 run is the remaining confirmation** (see Open items) — the openQuestion
-is whether DiffusionGemma keeps `ev-NN` numbering monotonic across ~10 steps (the `_citations.md` map is the
-recovery path if it drifts).
+
+**VERIFIED end-to-end on L4/DiffusionGemma 2026-06-23 (`runs/deepresearch3`, `manifest.ok:true`).** It took
+three live runs, each surfacing a real fix:
+- Run 1 — the agent replied "no topic" every step: `task.topic` is header-only and never reaches the prompt
+  (convention is self-contained steps). Fix: state the topic verbatim in step 1.
+- Run 2 — step 1 produced a textbook scope, but steps 2-10 hit "Context overflow". TWO environmental causes:
+  (a) **Brave free plan 429-rate-limits BURSTS** — the gemma4 model fired parallel `web_search` calls, all
+  429'd, and the retry storm ballooned the turn (prePromptMessageCount 4→37) until overflow; (b) OpenClaw
+  reserves **contextWindow/2** for output regardless of `reserveTokens`, so 32768 left only ~16k usable
+  prompt. (A single date `web_search` succeeded earlier the same day, proving it's the per-second burst
+  limit, not monthly quota.) Fixes: a skill **ONE-SEARCH-AT-A-TIME** rule (no bursts; on 429 note the gap and
+  proceed, never storm-retry) and **--max-model-len/contextWindow 32768→49152** (~24576 usable; fits the L4's
+  measured **53,394-token KV cache** at 1.08x — 65536 would not).
+- Run 3 — SUCCESS: 22 `web_search` calls succeeded (429s 20→4, overflow 7→4 and auto-recovered), 5 sources
+  saved as `memory/ev-01..ev-05` + `_citations.md`, a triangulation table (CONFIRMED ≥2 independent
+  publishers), a red-team critique, and a progressively-built cited report — exec summary → findings
+  (consensus-vs-debate) → labelled SYNTHESIS → Limitations (correctly **flagging the single-source
+  $0.0003 metric [4]** and a 403 fetch gap) → Recommendations → a COMPLETE References `[1]-[5]` with real
+  URLs (no placeholders). Audit: every body `[N]` resolves to a saved ev-note; `_citations.md` matches the
+  bibliography; **no fabricated citations**.
+
+Operational notes for future runs: (1) the Brave FREE plan only sustains ~1 search/sec — the
+one-search-at-a-time rule is load-bearing, not advisory; a burstier task will 429 and overflow. (2) The
+contextWindow/2 output reserve means usable prompt budget is HALF the window — size the window for the
+accumulating shared session, not just the single largest turn. (3) DiffusionGemma occasionally emits a stray
+unicode glyph (e.g. `독`) at a section break — a decoder artifact, cosmetic, not a pipeline bug.
 
 ## Open items
 
 - [x] Land `infer_ok=true` on T4 via the decoupled harness — **done, run #6, 2026-06-15.**
-- [ ] Live-verify the ported `deep-research` skill end-to-end on L4 (`configs/diffusiongemma_deepresearch.json`
-      + `examples/web_research_citation.json`): confirm a complete cited `research_result.md`, every body `[N]`
-      resolves to an `openclaw_state/memory/ev-NN-*.md` note, and no turn truncated. Judge on the bibliography.
+- [x] Live-verify the ported `deep-research` skill end-to-end on L4 (`configs/diffusiongemma_deepresearch.json`
+      + `examples/web_research_citation.json`) — **done 2026-06-23, run 3 (`runs/deepresearch3`, `manifest.ok:true`):**
+      complete cited `research_result.md`, every body `[N]` resolves to an `openclaw_state/memory/ev-0N-*.md` note,
+      `_citations.md` matches the bibliography, single-source claim flagged, no fabricated citations. Took the
+      anti-burst + window-49152 fixes above to land.
 - [ ] Refactor `bin/` + `remote/` from detached-bootstrap+sparse-poll to the short-exec model
       (port `e2e_boot.py`/`e2e_poll.py`/`e2e_finish.py` into the launcher; update `self_test.py`).
 - [x] Obtain an L4/A100 and run the real DiffusionGemma profile — **done: L4 e2e green 2026-06-17;

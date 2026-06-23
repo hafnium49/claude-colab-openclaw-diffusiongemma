@@ -217,4 +217,9 @@ bash bin/colab_openclaw_diffusiongemma.sh \
 - Citation integrity is enforced in the skill (`[N]` per claim, complete bibliography, no fabrication,
   source-as-data trust boundary). The ev-note ledger is bundled under `openclaw_state/memory/` for audit.
 - For fan-out RETRIEVE isolation use `examples/web_research_fanout.json` (bare sub-questions) — do NOT flip
-  `orchestration` on the citation task. Needs `BRAVE_API_KEY` in `~/.env`. **Live L4 verification pending.**
+  `orchestration` on the citation task. Needs `BRAVE_API_KEY` in `~/.env`.
+- **VERIFIED end-to-end on L4 2026-06-23** (`runs/deepresearch3`): 5 sources → `ev-01..ev-05` + `_citations.md`,
+  triangulation + critique, cited progressive report, complete `[1]-[5]` bibliography, no fabrication. Two
+  run-tuned constraints: the Brave FREE plan only sustains ~1 search/sec (the skill enforces ONE-SEARCH-AT-A-TIME;
+  bursts 429 → retry storm → context overflow), and OpenClaw reserves contextWindow/2 for output so the config
+  raises the window to 49152 (~24576 usable; fits the L4's 53,394-token KV at 1.08x). See `docs/validation_findings.md`.
