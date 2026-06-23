@@ -13,12 +13,14 @@ required = [
     'README.md',
     '.claude/agents/colab-openclaw-diffusiongemma.md',
     '.claude/skills/colab-openclaw-diffusiongemma/SKILL.md',
+    'skills/deep-research/SKILL.md',
     'bin/colab_openclaw_diffusiongemma.sh',
     'remote/remote_colab_openclaw_diffusiongemma.py',
     'remote/colab_exec_stub.py',
     'configs/diffusiongemma_nvfp4.json',
     'configs/diffusiongemma_web.json',
     'configs/diffusiongemma_research.json',
+    'configs/diffusiongemma_deepresearch.json',
     'configs/diffusiongemma_fanout_deep.json',
     'configs/smoke_test_tiny.json',
     'configs/llama_qwen9b.json',
@@ -36,6 +38,7 @@ required = [
     'examples/web_research_fanout.json',
     'examples/web_research_fanout_deep.json',
     'examples/web_research_memory.json',
+    'examples/web_research_citation.json',
     'notebooks/_gen_notebook.py',
     'notebooks/openclaw_chat_colab.ipynb',
     'notebooks/_gen_colab_ai_notebook.py',
@@ -51,6 +54,7 @@ for rel in required:
 
 for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/diffusiongemma_web.json',
             'configs/diffusiongemma_research.json',
+            'configs/diffusiongemma_deepresearch.json',
             'configs/diffusiongemma_fanout_deep.json',
             'configs/smoke_test_tiny.json',
             'configs/llama_qwen9b.json',
@@ -63,6 +67,7 @@ for rel in ['configs/diffusiongemma_nvfp4.json', 'configs/diffusiongemma_web.jso
             'examples/web_research_deep.json', 'examples/web_research_fanout.json',
             'examples/web_research_fanout_deep.json',
             'examples/web_research_memory.json',
+            'examples/web_research_citation.json',
             'notebooks/openclaw_chat_colab.ipynb', 'notebooks/openclaw_colab_ai.ipynb',
             'notebooks/openclaw_diffusiongemma_colab.ipynb']:
     with (ROOT / rel).open('r', encoding='utf-8') as f:
@@ -87,6 +92,24 @@ for rel in ['notebooks/openclaw_chat_colab.ipynb', 'notebooks/openclaw_colab_ai.
             ast.parse(src)
         except SyntaxError as exc:
             raise SystemExit(f'{rel} code cell {i} is not valid Python: {exc}')
+
+# The deep-research OpenClaw skill ships BOTH as a checked-in artifact (skills/deep-research/SKILL.md)
+# AND as the DEEP_RESEARCH_SKILL string constant the remote writes to ~/.openclaw/skills/deep-research/
+# SKILL.md at runtime. The constant is what actually reaches Colab, so the two MUST stay byte-in-sync
+# (modulo surrounding whitespace) — assert it, or an edit to one silently diverges from what ships.
+remote_src = (ROOT / 'remote/remote_colab_openclaw_diffusiongemma.py').read_text(encoding='utf-8')
+skill_const = None
+for node in ast.parse(remote_src).body:
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == 'DEEP_RESEARCH_SKILL':
+                skill_const = ast.literal_eval(node.value)
+if skill_const is None:
+    raise SystemExit('DEEP_RESEARCH_SKILL constant not found in remote orchestrator')
+skill_file = (ROOT / 'skills/deep-research/SKILL.md').read_text(encoding='utf-8')
+if skill_const.strip() != skill_file.strip():
+    raise SystemExit('skills/deep-research/SKILL.md is out of sync with the DEEP_RESEARCH_SKILL constant '
+                     'in remote/remote_colab_openclaw_diffusiongemma.py — re-sync them')
 
 subprocess.run(['bash', '-n', str(ROOT / 'bin/colab_openclaw_diffusiongemma.sh')], check=True)
 print('self_test_ok')

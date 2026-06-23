@@ -94,6 +94,11 @@ bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
 # Lead delegates each sub-question to an ISOLATED sub-agent (sessions_spawn/yield); raw pages stay in the child.
 bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
   --config configs/diffusiongemma_research.json --task examples/web_research_fanout.json --out ./runs/fanout
+
+# Citation-backed DEEP-RESEARCH REPORT (deep-research skill ported from wg-automation, tuned for DiffusionGemma)
+# shared-session; research phases then PACKAGE split across 5 cited section-turns -> research_result.md. BRAVE_API_KEY in ~/.env.
+bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
+  --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/deepresearch
 ```
 
 `--keep-session` leaves the VM up for inspection (default tears it down after download). The launcher runs `scripts/self_test.py` first, so a self-test failure aborts before any VM is provisioned. The `--out` directory receives `openclaw_diffusiongemma_results.zip`, `manifest.json`, `research_result.md` (research mode), `colab_session_log.ipynb`, and local command logs.
@@ -106,6 +111,8 @@ The project ships a subagent and skill (`self_test.py` requires both):
 .claude/agents/colab-openclaw-diffusiongemma.md
 .claude/skills/colab-openclaw-diffusiongemma/SKILL.md
 ```
+
+Separately, the **OpenClaw deep-research skill** (the one the in-Colab agent runs) is checked in at `skills/deep-research/SKILL.md` and also shipped as the `DEEP_RESEARCH_SKILL` constant the remote installs into `~/.openclaw/skills/deep-research/` (`self_test.py` keeps the two byte-in-sync). It was ported from wg-automation's `claude-deep-research-skill` and optimized for the small DiffusionGemma context window: citation integrity (`[N]` per claim, complete bibliography, no fabrication), a `memory/ev-NN-*.md` evidence ledger recalled via `memory_search`/`memory_get`, and one-section-per-turn progressive report writing. Drop the file into any `~/.openclaw/skills/` to use it standalone.
 
 Ask Claude Code to use the `colab-openclaw-diffusiongemma` subagent, or invoke the skill directly:
 

@@ -197,3 +197,24 @@ The "Already compacted" multi-step edge above is **SOLVED** via OpenClaw's bound
 - **Layer 3 (fan-out, VERIFIED L4/DiffusionGemma `b52be9b`):** set the task's `orchestration:"subagent-fanout"` (default `shared-session`) — one LEAD turn delegates each sub-question to an ISOLATED child (`sessions_spawn context:isolated` + `sessions_yield`); raw pages stay in the child, only a distilled summary returns. Run `--gpu L4 --config configs/diffusiongemma_research.json --task examples/web_research_fanout.json`. Proven: lead spawned 2 isolated children, each ran real Brave search, lead wrote a cited table (Python / Node LTS) in ~47 s, `compactionCount 0`; green twice (`manifest.ok:true`, table in `research_result.md`).
 - **Two harness fixes (`b52be9b`):** (1) decode `TimeoutExpired.output` (bytes → else `TypeError("can't concat str to bytes")`); (2) `openclaw agent --local --json` hangs ~20 min after answering when subagents spawn → recover the synthesis from the server-side trajectory (`_lead_synthesis_from_trajectory`), judge on `got_text` not CLI rc (124 expected), keep the lead timeout short.
 - T4 fee-free → **Layer-1 pruning**; **Layer-3 fan-out is the L4 path** (LFM2.5-8B on serial T4 was too slow to finish the orchestration).
+
+## 2026-06-23 — Citation-backed deep-research REPORTS (ported deep-research skill)
+
+The OpenClaw `deep-research` skill was upgraded by porting wg-automation's `claude-deep-research-skill`,
+optimized for DiffusionGemma. It ships as `skills/deep-research/SKILL.md` and the `DEEP_RESEARCH_SKILL`
+constant (kept in sync by `self_test.py`). Run a full cited report:
+
+```bash
+bash bin/colab_openclaw_diffusiongemma.sh \
+  --gpu L4 \
+  --config configs/diffusiongemma_deepresearch.json \
+  --task examples/web_research_citation.json \
+  --out ./runs/deepresearch
+```
+
+- shared-session: research phases build a `memory/ev-NN-*.md` evidence ledger; **PACKAGE is split across 5
+  section-sized turns** (per-turn output is capped at `maxTokens=2048`) → a fully-cited `research_result.md`.
+- Citation integrity is enforced in the skill (`[N]` per claim, complete bibliography, no fabrication,
+  source-as-data trust boundary). The ev-note ledger is bundled under `openclaw_state/memory/` for audit.
+- For fan-out RETRIEVE isolation use `examples/web_research_fanout.json` (bare sub-questions) — do NOT flip
+  `orchestration` on the citation task. Needs `BRAVE_API_KEY` in `~/.env`. **Live L4 verification pending.**

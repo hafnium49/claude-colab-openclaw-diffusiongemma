@@ -1,0 +1,83 @@
+{
+  "_comment": "DiffusionGemma 26B-A4B-NVFP4 on L4 (vLLM, gemma4 native tool_calls, thinking ON) tuned for CITATION-BACKED DEEP RESEARCH driving the upgraded deep-research SKILL (ported from wg-automation's claude-deep-research-skill). Layer-1 bounded context (openclaw.context: pruning ON / reserve_tokens_floor 0 / midTurnPrecheck / tool_result_max_chars 6000 / memory_search_provider none) keeps the shared session bounded while many ev-notes accumulate; the agent is scoped to ONLY the deep-research skill (agents.defaults.skills=[\"deep-research\"]) so the ~20 bundled skills don't overflow the 32k window. Knobs are identical to the VERIFIED configs/diffusiongemma_research.json; this variant carries the deep-research _comment + an explicit openclaw.fanout block (multilevel disabled -> single-level fan-out only). Run: --gpu L4 --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/deepresearch. For Layer-3 RETRIEVE isolation use examples/web_research_fanout.json instead (bare sub-questions; the harness injects its own lead/child prompts). BRAVE_API_KEY forwarded from ~/.env; loopback only.",
+  "model": {
+    "id": "RedHatAI/diffusiongemma-26B-A4B-it-NVFP4",
+    "name": "DiffusionGemma 26B-A4B IT NVFP4",
+    "reasoning": true,
+    "input": [
+      "text"
+    ],
+    "context_window": 262144,
+    "max_tokens": 4096
+  },
+  "vllm": {
+    "install": true,
+    "install_command": "python -m pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly/cu129 --extra-index-url https://download.pytorch.org/whl/cu129",
+    "install_timeout_seconds": 3600,
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 2400,
+    "use_v2_model_runner": "1",
+    "hf_transfer": "1",
+    "serve_args": [
+      "--trust-remote-code",
+      "--max-num-seqs",
+      "1",
+      "--gpu-memory-utilization",
+      "0.90",
+      "--max-model-len",
+      "32768",
+      "--hf-overrides",
+      "{\"diffusion_sampler\":\"entropy_bound\",\"diffusion_entropy_bound\":0.1}",
+      "--default-chat-template-kwargs",
+      "{\"enable_thinking\":true}",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser",
+      "gemma4",
+      "--reasoning-parser",
+      "gemma4"
+    ]
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "gateway_bind": "loopback",
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": true,
+      "maxTokens": 2048,
+      "contextWindow": 32768
+    },
+    "web": {
+      "enabled": true,
+      "provider": "brave",
+      "plugin_package": "@openclaw/brave-plugin",
+      "max_results": 3,
+      "code_mode": false,
+      "lean_workspace": true
+    },
+    "identity": {
+      "name": "Hiroki"
+    },
+    "context": {
+      "enabled": true,
+      "pruning": {
+        "enabled": true,
+        "mode": "cache-ttl",
+        "ttl": "5m",
+        "min_prunable_tool_chars": 4000
+      },
+      "reserve_tokens_floor": 0,
+      "reserve_tokens": 4096,
+      "compaction_mode": "safeguard",
+      "mid_turn_precheck": true,
+      "tool_result_max_chars": 6000,
+      "memory_search_provider": "none"
+    },
+    "fanout": {
+      "multilevel": false,
+      "max_spawn_depth": 1
+    }
+  }
+}

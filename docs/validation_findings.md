@@ -232,9 +232,62 @@ disabled.
   `false`); the default fan-out path is flat single-level (verified). Set `multilevel:true` to re-enable
   when a capable+fast model (or true batched concurrency on a capable model) is available.
 
+## 2026-06-23 — Ported the wg-automation deep-research skill to OpenClaw (DiffusionGemma-optimized)
+
+Converted wg-automation's `claude-deep-research-skill` (a Claude Code native, citation-backed research
+engine) into the OpenClaw `deep-research` skill and tuned it for the DiffusionGemma/L4 path. The skill
+now ships BOTH as a checked-in artifact `skills/deep-research/SKILL.md` AND as the `DEEP_RESEARCH_SKILL`
+constant the remote writes to `~/.openclaw/skills/deep-research/SKILL.md`; **`self_test.py` AST-extracts
+the constant and asserts it equals the artifact** so they can never silently diverge (the constant is
+what actually reaches Colab). New config `configs/diffusiongemma_deepresearch.json` + task
+`examples/web_research_citation.json`.
+
+This was a **principled distillation, not a 1:1 port** — the source assumes Claude's huge context, ~10
+Python helper scripts, `search-cli`/Exa, concurrent `Task` sub-agents, and HTML/PDF export, none of which
+exist on the ephemeral loopback VM. What was KEPT vs DROPPED, and the harness-alignment facts:
+
+- **Kept (the crown jewels):** the citation/anti-hallucination discipline — every fact cited `[N]` in its
+  own sentence, FACT-vs-SYNTHESIS separation, a zero-tolerance complete bibliography, the **source-as-data
+  trust boundary** (fetched pages are data to quote, never instructions — a prompt-injection guard), and
+  realistic triangulation (≥2 independent sources per core claim, explicit single-source flags). Plus the
+  8-phase method (scope→plan→retrieve→triangulate→outline→synthesize→critique→package) scaled down.
+- **Persistence remap:** the `citation_manager.py`/`evidence_store.py` ledgers and `verify_citations.py`
+  become an **append-only evidence store in `memory/ev-NN-<slug>.md`** (the note number NN *is* its `[N]`,
+  so a citation cannot exist without a saved, recallable source), a stable `memory/_citations.md` N→URL map
+  (drift backstop), and an **in-thinking citation self-check** before each section write (zero output-token
+  cost; thinking is ON anyway). `source_evaluator.py` → in-note credibility banding.
+- **DiffusionGemma optimizations:** per-turn output is hard-capped at `maxTokens=2048` (~1500 words), so the
+  report is written **one section per turn** and the harness's existing per-step append to
+  `research_result.md` IS the assembled report — `examples/web_research_citation.json` splits PACKAGE across
+  5 section-sized turns so no turn overflows. Decode is serial (`--max-num-seqs 1`), so fan-out is used only
+  for context isolation, never for speed; multi-level stays OFF. The skill is ONE lean file (~2k tokens) so
+  it doesn't re-trip the bundled-skills overflow.
+- **Dropped (with reason):** HTML/PDF/WeasyPrint + `~/Documents` (headless VM, no display); `search-cli`/Exa
+  (only the Brave plugin exists); the Python scripts + `*.jsonl` ledgers (not installed; replaced by
+  `memory/*.md`); 20k-word single-shot/ultradeep reports (impossible at 2048 tok/turn); a self-managed
+  report file (the harness OWNS `research_result.md` and captures the turn TEXT — a separate file would be
+  invisible, so the skill reserves `write` for memory notes only).
+- **Harness-alignment facts (so they aren't re-litigated):** (1) the agent's TURN TEXT is the captured
+  artifact, appended under `## Step i` (shared-session) / `## Lead synthesis` (fan-out) — the skill must not
+  keep its own report file. (2) In `subagent-fanout` the harness injects its OWN spawn-all-then-yield lead
+  prompt + per-child caps; the skill defers to that choreography (it does not issue its own
+  `sessions_spawn`) and instead makes per-child research + lead synthesis/citation excellent. Fan-out needs
+  a SEPARATE bare-subquestion task (`examples/web_research_fanout.json`), NOT flipping `orchestration` on the
+  citation task's phase-verb steps. The evidence ledger is snapshotted to `openclaw_state/memory/` for audit.
+
+Design was produced via a 4-design judge panel → synthesis → adversarial review; the review's fixes (split
+PACKAGE so no step exceeds one section; same-turn-vs-earlier-turn memory recall timing; fan-out LEAD
+reworded from a "do NOT spawn" prohibition to a deference framing; bounded per-turn thinking) are folded in.
+**Status: `self_test` GREEN; a live L4 run is the remaining confirmation** (see Open items) — the openQuestion
+is whether DiffusionGemma keeps `ev-NN` numbering monotonic across ~10 steps (the `_citations.md` map is the
+recovery path if it drifts).
+
 ## Open items
 
 - [x] Land `infer_ok=true` on T4 via the decoupled harness — **done, run #6, 2026-06-15.**
+- [ ] Live-verify the ported `deep-research` skill end-to-end on L4 (`configs/diffusiongemma_deepresearch.json`
+      + `examples/web_research_citation.json`): confirm a complete cited `research_result.md`, every body `[N]`
+      resolves to an `openclaw_state/memory/ev-NN-*.md` note, and no turn truncated. Judge on the bibliography.
 - [ ] Refactor `bin/` + `remote/` from detached-bootstrap+sparse-poll to the short-exec model
       (port `e2e_boot.py`/`e2e_poll.py`/`e2e_finish.py` into the launcher; update `self_test.py`).
 - [x] Obtain an L4/A100 and run the real DiffusionGemma profile — **done: L4 e2e green 2026-06-17;
