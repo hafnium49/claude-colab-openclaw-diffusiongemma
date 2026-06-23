@@ -109,14 +109,17 @@ if ld:
     env["LD_LIBRARY_PATH"] = ld + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
 # Optionally set HF_TOKEN in the cell above if the checkpoint is gated: env["HF_TOKEN"] = "hf_..."
 
-# vLLM serve args == configs/diffusiongemma_nvfp4.json -> serve_args. The JSON-valued flags are
-# passed as single list elements (NO shell), so they don't need the shlex-quoting the bash path did.
+# vLLM serve args == configs/diffusiongemma_web.json -> serve_args (the VERIFIED web-search/tools
+# config). The gemma4 tool + reasoning parser flags give DiffusionGemma NATIVE tool_calls with
+# thinking ON (verified 2026-06-18); 32768 context so the agent+tools prompt doesn't overflow.
+# JSON-valued flags are single list elements (NO shell), so no shlex-quoting needed.
 vllm = shutil.which("vllm") or "vllm"
 serve = [vllm, "serve", MODEL,
     "--trust-remote-code", "--max-num-seqs", "1", "--gpu-memory-utilization", "0.90",
-    "--max-model-len", "8192",
+    "--max-model-len", "32768",
     "--hf-overrides", '{{"diffusion_sampler":"entropy_bound","diffusion_entropy_bound":0.1}}',
     "--default-chat-template-kwargs", '{{"enable_thinking":true}}',
+    "--enable-auto-tool-choice", "--tool-call-parser", "gemma4", "--reasoning-parser", "gemma4",
     "--host", "127.0.0.1", "--port", "{LLM_PORT}"]
 subprocess.Popen(serve, env=env,
                  stdout=open("/content/vllm.log", "w"), stderr=subprocess.STDOUT)
@@ -151,11 +154,23 @@ ob = oc(["onboard", "--non-interactive", "--accept-risk", "--mode", "local",
     "--skip-daemon", "--skip-skills", "--skip-channels", "--skip-health", "--skip-ui", "--json"])
 print("onboard rc =", ob.returncode)
 
-# Infer fixes == configs/diffusiongemma_nvfp4.json -> openclaw.compat (string content; tools off;
-# maxTokens < max-model-len so the completion can't overflow the window -> empty reply).
-for k, v in [("compat.requiresStringContent", "true"), ("compat.supportsTools", "false"),
-             ("maxTokens", "512"), ("contextWindow", "4096")]:
+# Infer fixes == configs/diffusiongemma_web.json -> openclaw.compat. Tools ON (gemma4 native
+# tool_calls, verified 2026-06-18) + 32768 context so the agent+tools prompt doesn't overflow.
+for k, v in [("compat.requiresStringContent", "true"), ("compat.supportsTools", "true"),
+             ("maxTokens", "2048"), ("contextWindow", "32768")]:
     oc(["config", "set", f"models.providers.vllm.models[0].{{k}}", v])
+
+# Web search (optional): paste a Brave Search API key to enable live web_search/web_fetch via the
+# gemma4 native tool_calls (== configs/diffusiongemma_web.json -> openclaw.web). Blank = skip.
+BRAVE_API_KEY = ""  # <-- your Brave Search API key (https://brave.com/search/api/)
+if BRAVE_API_KEY:
+    os.environ["BRAVE_API_KEY"] = BRAVE_API_KEY
+    oc(["plugins", "install", "@openclaw/brave-plugin"])
+    for k, v in [("plugins.entries.brave.enabled", "true"), ("tools.web.search.provider", "brave"),
+                 ("tools.web.search.enabled", "true"), ("tools.web.fetch.enabled", "true"),
+                 ("tools.profile", "coding")]:
+        oc(["config", "set", k, v])
+    print("web search ENABLED (Brave) — DiffusionGemma can now call web_search/web_fetch")
 
 # Gateway runs in-process (lives while the tab is open) — needed for the inline dashboard (cell 5).
 subprocess.Popen([OPENCLAW, "gateway", "run"],
