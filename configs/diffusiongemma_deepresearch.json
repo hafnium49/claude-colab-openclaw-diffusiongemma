@@ -1,5 +1,5 @@
 {
-  "_comment": "DiffusionGemma 26B-A4B-NVFP4 on L4 (vLLM, gemma4 native tool_calls, thinking ON) tuned for CITATION-BACKED DEEP RESEARCH driving the upgraded deep-research SKILL (ported from wg-automation's claude-deep-research-skill). Layer-1 bounded context (openclaw.context: pruning ON / reserve_tokens_floor 0 / midTurnPrecheck / tool_result_max_chars 6000 / memory_search_provider none) keeps the shared session bounded while many ev-notes accumulate; the agent is scoped to ONLY the deep-research skill (agents.defaults.skills=[\"deep-research\"]) so the ~20 bundled skills don't overflow the 32k window. Knobs are identical to the VERIFIED configs/diffusiongemma_research.json; this variant carries the deep-research _comment + an explicit openclaw.fanout block (multilevel disabled -> single-level fan-out only). Run: --gpu L4 --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/deepresearch. For Layer-3 RETRIEVE isolation use examples/web_research_fanout.json instead (bare sub-questions; the harness injects its own lead/child prompts). BRAVE_API_KEY forwarded from ~/.env; loopback only.",
+  "_comment": "DiffusionGemma 26B-A4B-NVFP4 on L4 (vLLM, gemma4 native tool_calls, thinking ON) tuned for CITATION-BACKED DEEP RESEARCH driving the upgraded deep-research SKILL (ported from wg-automation's claude-deep-research-skill). Layer-1 bounded context (openclaw.context: pruning ON / reserve_tokens_floor 0 / midTurnPrecheck / tool_result_max_chars 6000 / memory_search_provider none) keeps the shared session bounded while many ev-notes accumulate; the agent is scoped to ONLY the deep-research skill (agents.defaults.skills=[\"deep-research\"]) so the ~20 bundled skills don't overflow the 32k window. Bounded-context knobs match the VERIFIED configs/diffusiongemma_research.json, BUT the window is raised to --max-model-len/contextWindow 49152 (vs 32768): OpenClaw reserves contextWindow/2 for output regardless of reserve_tokens, so 32768 left only ~16k usable prompt and a multi-step shared session overflowed at step 2 (live run 2026-06-23); 49152 -> ~24576 usable and still fits the L4's 53,394-token KV cache at 1.08x. Pair this with the skill's ONE-SEARCH-AT-A-TIME rule -- bursty web_search hits Brave's free per-second 429 limit and the retry storm was the actual overflow driver. Also carries an explicit openclaw.fanout block (multilevel disabled -> single-level only). Run: --gpu L4 --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/deepresearch. For Layer-3 RETRIEVE isolation use examples/web_research_fanout.json instead (bare sub-questions; the harness injects its own lead/child prompts). BRAVE_API_KEY forwarded from ~/.env; loopback only.",
   "model": {
     "id": "RedHatAI/diffusiongemma-26B-A4B-it-NVFP4",
     "name": "DiffusionGemma 26B-A4B IT NVFP4",
@@ -26,7 +26,7 @@
       "--gpu-memory-utilization",
       "0.90",
       "--max-model-len",
-      "32768",
+      "49152",
       "--hf-overrides",
       "{\"diffusion_sampler\":\"entropy_bound\",\"diffusion_entropy_bound\":0.1}",
       "--default-chat-template-kwargs",
@@ -47,7 +47,7 @@
       "requiresStringContent": true,
       "supportsTools": true,
       "maxTokens": 2048,
-      "contextWindow": 32768
+      "contextWindow": 49152
     },
     "web": {
       "enabled": true,

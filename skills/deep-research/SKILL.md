@@ -38,6 +38,11 @@ for memory notes -- see below) - read. In fan-out mode children return distilled
   org/author, not quoting each other); >=3 for contested claims. A small model rarely exceeds this --
   that is fine: just flag single-source claims as "single-source [N]" and report consensus vs debate,
   never hide it.
+- ONE SEARCH AT A TIME: issue a SINGLE web_search, WAIT for its result, then decide the next. NEVER emit
+  several web_search/web_fetch calls in one turn -- the free search plan rate-limits bursts (HTTP 429),
+  which wastes the turn AND floods your context until it overflows. On a 429 / rate-limit / error, do NOT
+  storm-retry the same query; note the gap and proceed with the sources you already have. Budget ~1-2
+  searches per RETRIEVE turn, not a barrage.
 
 ## Evidence store (your ledger -- replaces any helper script)
 
@@ -67,9 +72,10 @@ it uses must already exist as ev-notes.
    for this) so recency searches don't anchor to your training cutoff. Save memory/ev-00-scope.md.
 2. PLAN -- list 3-6 search ANGLES: core, technical, recent (date-filtered), authoritative/primary, and
    an OPPOSING/critique angle. Note which claims need triangulation.
-3. RETRIEVE -- work the angles with web_search; web_fetch only the few most credible hits. For EACH
-   useful source write an ev-note (+ update memory/_citations.md), varying TYPE, DATE, PERSPECTIVE.
-   STOP at ~5-8 credible sources covering the core claims, or when time runs short -- do not over-search.
+3. RETRIEVE -- work the angles ONE web_search at a time (see the one-search-at-a-time rule above; bursts
+   get 429-rate-limited and overflow context); web_fetch only the few most credible hits. For EACH useful
+   source write an ev-note (+ update memory/_citations.md), varying TYPE, DATE, PERSPECTIVE. STOP at ~5-8
+   credible sources covering the core claims, or when time/quota runs short -- do not over-search.
 4. TRIANGULATE -- for each core claim, recall its ev-notes and check across sources (>=2 independent =
    confirmed; else single-source/tentative). Note disagreement. Record verdicts in the ev-note.
 5. OUTLINE -- set report sections from the EVIDENCE (4-8 findings). If findings contradict the plan,
