@@ -504,12 +504,22 @@ def start_ollama(config: Dict[str, Any], scfg: Dict[str, Any]) -> Dict[str, Any]
     host, port = scfg['host'], scfg['port']
     max_wait = scfg['startup_timeout_seconds']
     num_ctx = int(ocfg.get('num_ctx', 32768))
+    num_parallel = int(ocfg.get('num_parallel', 0))    # 0 = Ollama default (~1 request/model); >0 serves
+                                                        # that many requests CONCURRENTLY so a multi-agent
+                                                        # fan-out / coordinator-tier depth run executes in
+                                                        # PARALLEL (unlike vLLM --max-num-seqs 1 which
+                                                        # serializes and times out for block-diffusion).
     # Bind the daemon to the project's loopback :8000 (NEVER :11434 default if it clashes), and set
     # the default context (Ollama caps num_ctx small regardless of the model's max). OLLAMA_HOST is
     # read by BOTH the daemon and the `ollama pull` client.
     hostport = f'{host}:{port}'
     env = {'OLLAMA_HOST': hostport, 'OLLAMA_CONTEXT_LENGTH': str(num_ctx)}
+    par_export = ''
+    if num_parallel > 0:
+        env['OLLAMA_NUM_PARALLEL'] = str(num_parallel)
+        par_export = f"export OLLAMA_NUM_PARALLEL={num_parallel}; "
     serve_cmd = (f"export OLLAMA_HOST={shlex.quote(hostport)}; export OLLAMA_CONTEXT_LENGTH={num_ctx}; "
+                 + par_export +
                  f"nohup ollama serve > {RESULTS}/serve.log 2>&1 & echo $! > {RESULTS}/serve.pid")
     run(serve_cmd, 'serve_start.log', check=True, timeout=60, env=env)
     # Wait for the daemon, pull the model (blocks until downloaded), then confirm the OpenAI endpoint.

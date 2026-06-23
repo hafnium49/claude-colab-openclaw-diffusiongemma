@@ -1,0 +1,60 @@
+{
+  "_comment": "Layer-3 MULTI-LEVEL fan-out on the FAST T4/Ollama/LFM2.5 path with CONCURRENCY (OLLAMA_NUM_PARALLEL=4) \u2014 the substrate fix for multi-level completion that DiffusionGemma/L4 cannot do (vLLM --max-num-seqs 1 SERIALIZES the ~7-9 agent tree -> 20-min timeout; batched decode max_num_seqs>1 breaks block-diffusion serving). LFM2.5-8B is fast AND Ollama serves the coordinators+leaves CONCURRENTLY, so the LEAD->COORDINATOR->leaf tree can actually COMPLETE the synthesis. openclaw.fanout {max_spawn_depth 2 + maxChildrenPerAgent/maxConcurrent caps} drives the prescriptive coordinator-tier prompt (_fanout_lead_message_multilevel); openclaw.context keeps each agent bounded. Run: --gpu T4 --config configs/lfm2_ollama_fanout_deep.json --task examples/web_research_fanout_deep.json. BRAVE_API_KEY from ~/.env.",
+  "model": {
+    "id": "lfm2.5:8b"
+  },
+  "serve": {
+    "backend": "ollama",
+    "host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 900,
+    "ollama": {
+      "num_ctx": 32768,
+      "install_timeout_seconds": 900,
+      "download_timeout_seconds": 1800,
+      "num_parallel": 4
+    }
+  },
+  "openclaw": {
+    "install": true,
+    "provider_id": "vllm",
+    "gateway_port": 18789,
+    "compat": {
+      "requiresStringContent": true,
+      "supportsTools": true,
+      "maxTokens": 2048,
+      "contextWindow": 32768
+    },
+    "web": {
+      "enabled": true,
+      "provider": "brave",
+      "plugin_package": "@openclaw/brave-plugin",
+      "max_results": 3,
+      "code_mode": false,
+      "lean_workspace": true
+    },
+    "identity": {
+      "name": "Hiroki"
+    },
+    "context": {
+      "enabled": true,
+      "pruning": {
+        "enabled": true,
+        "mode": "cache-ttl",
+        "ttl": "5m",
+        "min_prunable_tool_chars": 4000
+      },
+      "reserve_tokens_floor": 0,
+      "reserve_tokens": 4096,
+      "compaction_mode": "safeguard",
+      "mid_turn_precheck": true,
+      "tool_result_max_chars": 6000,
+      "memory_search_provider": "none"
+    },
+    "fanout": {
+      "max_spawn_depth": 2,
+      "max_children_per_agent": 4,
+      "max_concurrent": 12
+    }
+  }
+}
