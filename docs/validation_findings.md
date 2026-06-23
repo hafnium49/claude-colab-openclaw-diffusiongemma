@@ -199,6 +199,39 @@ the decoupled short-exec architecture even more necessary.
   synthesis from the server-side trajectory because `openclaw agent --local --json` hangs ~20 min after
   answering once subagents are spawned. Full detail in `.claude/agents/colab-openclaw-diffusiongemma.md`.
 
+## 2026-06-23 — Fan-out follow-ups live-verified; MULTI-LEVEL depth DISABLED (does not complete)
+
+Four fan-out/context follow-ups were verified live (≈12 GPU runs). Three are solid; multi-level is
+disabled.
+
+- **✅ Early-exit on trajectory completion** — the fan-out lead is launched detached and the trajectory
+  polled; the group is killed once a TERMINAL substantive synthesis exists AND the trajectory has been
+  silent for `OCDG_EARLYEXIT_SILENCE_S` (180s). Verified: full cited table, no truncation, ~9× faster
+  than the old blocking cap. (Bugs found+fixed en route: bytes-timeout crash; killing on an intermediate
+  "still waiting…" turn; capturing a `NO_REPLY` memoryFlush turn; snapshot sorted by filename not mtime.)
+- **✅ Parallel fan-out** — lead spawns all children before yielding; the 6-question fan-out completed.
+- **✅ Layer-2 memory recall** — fixed: notes must be saved as `memory/*.md` (only those are FTS-indexed;
+  the agent had written `memory/<name>` with no `.md`), `memorySearch.{provider:none, enabled:true}`,
+  and the invalid `tools.memory.enabled` keys removed. Verified: `memory_search` returns FTS hits on the
+  T4/Ollama/LFM2.5 path. (Recall completeness is limited by the 8B model reusing filenames — a model, not
+  harness, limit.)
+- **⚙️ Multi-level depth (LEAD → COORDINATOR → leaf) — STRUCTURE verified, COMPLETION not achievable →
+  DISABLED by default.** A prescriptive coordinator-tier prompt (`_fanout_lead_message_multilevel`) +
+  documented spawn caps (`agents.defaults.subagents.{maxSpawnDepth, maxChildrenPerAgent, maxConcurrent}`)
+  make the tier FORM reliably (2 coordinators + 4 leaves, every run). But it **never completes end-to-end**
+  on the available models, proven exhaustively:
+  - `max-num-seqs 1` (DiffusionGemma-26B serial) → tree forms, times out (one coordinator always lags).
+  - `max-num-seqs 4` (batch) → vLLM never starts (block-diffusion can't batch on a 24 GB L4).
+  - smaller tree (7 agents), 40-min budget, 75→180s silence window → still ends on "waiting for
+    coordinator-N" (DiffusionGemma too slow).
+  - T4/Ollama/LFM2.5 + `OLLAMA_NUM_PARALLEL=4` (fast + concurrent) → the 8B model is too weak: it ECHOES
+    the coordinator task strings as text instead of calling `sessions_spawn` → 0 tree.
+
+  Root cause: **no available model is BOTH capable enough to orchestrate the nested tree AND fast enough to
+  complete it in budget.** The code is retained but gated OFF behind `openclaw.fanout.multilevel` (default
+  `false`); the default fan-out path is flat single-level (verified). Set `multilevel:true` to re-enable
+  when a capable+fast model (or true batched concurrency on a capable model) is available.
+
 ## Open items
 
 - [x] Land `infer_ok=true` on T4 via the decoupled harness — **done, run #6, 2026-06-15.**

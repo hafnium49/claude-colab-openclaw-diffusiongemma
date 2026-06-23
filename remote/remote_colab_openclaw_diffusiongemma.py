@@ -786,6 +786,11 @@ def _configure_fanout(ocfg: Dict[str, Any], env: Dict[str, str]) -> List[str]:
     """
     fan = ocfg.get('fanout') or {}
     applied: List[str] = []
+    if not bool(fan.get('multilevel', False)):
+        # Multi-level fan-out DISABLED by default (it never completes on the available models — see
+        # _task_run + docs/validation_findings.md). Leave maxSpawnDepth at OpenClaw's default 1 so
+        # children CANNOT spawn their own children: flat single-level fan-out only (verified working).
+        return applied
     max_depth = int(fan.get('max_spawn_depth', 1))
     if max_depth > 1:
         # Also CAP fan-out width: DiffusionGemma over-spawns (a coordinator fired ~12 leaf spawns for
@@ -1472,16 +1477,21 @@ def _task_run() -> None:
             # stay in the child context; only distilled summaries return. Single long turn (no Python
             # poll loop — the lead uses sessions_yield), so give it the whole budget.
             lead_to = int(task_cfg.get('lead_timeout_seconds', total_budget))
-            # Multi-level (depth>=2) fan-out: when the config raised maxSpawnDepth (>1) AND there are
-            # enough sub-questions to warrant a coordinator tier (>=4), use the PRESCRIPTIVE multilevel
-            # prompt (LEAD -> COORDINATOR -> leaf, with verbatim pre-written coordinator task strings —
-            # DiffusionGemma ignored the old OPTIONAL "you MAY" clause and spawned flat). Otherwise fall
-            # back to the flat single-level prompt, so the depth<=1 / small-N path stays byte-identical.
-            max_depth = int(config.get('openclaw', {}).get('fanout', {}).get('max_spawn_depth', 1))
-            if max_depth > 1 and len(steps) >= 4:
+            # Multi-level (LEAD -> COORDINATOR -> leaf) fan-out is DISABLED by default. It is gated on
+            # an explicit opt-in flag openclaw.fanout.multilevel (default False) because live
+            # verification (2026-06-23) proved it NEVER COMPLETES on the available models: the tree
+            # always FORMS, but DiffusionGemma-26B is too slow (one coordinator always lags past budget),
+            # LFM2.5-8B is too weak (echoes the spawn args as text instead of spawning), and batched
+            # decode (max_num_seqs>1) breaks the block-diffusion model. See docs/validation_findings.md.
+            # The prescriptive multilevel prompt + caps + _configure_fanout are retained for when a model
+            # that is BOTH capable and fast (or true concurrency on a capable model) is available — set
+            # openclaw.fanout.multilevel=true to re-enable. Default path = flat single-level fan-out (VERIFIED).
+            fan_cfg = config.get('openclaw', {}).get('fanout', {}) or {}
+            max_depth = int(fan_cfg.get('max_spawn_depth', 1))
+            if bool(fan_cfg.get('multilevel', False)) and max_depth > 1 and len(steps) >= 4:
                 message = _fanout_lead_message_multilevel(steps, max_depth)
             else:
-                message = _fanout_lead_message(steps) + _fanout_depth_clause(max_depth)
+                message = _fanout_lead_message(steps)
             # Don't block on the lead CLI to its hard cap: it hangs ~20 min past producing its answer
             # once subagents are spawned. Poll the trajectory and kill the group once the synthesis
             # is stable; lead_to stays the fallback cap (rc 124). r["returncode"] read as before.

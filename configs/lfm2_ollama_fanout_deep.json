@@ -1,5 +1,5 @@
 {
-  "_comment": "Layer-3 MULTI-LEVEL fan-out on the FAST T4/Ollama/LFM2.5 path with CONCURRENCY (OLLAMA_NUM_PARALLEL=4) \u2014 the substrate fix for multi-level completion that DiffusionGemma/L4 cannot do (vLLM --max-num-seqs 1 SERIALIZES the ~7-9 agent tree -> 20-min timeout; batched decode max_num_seqs>1 breaks block-diffusion serving). LFM2.5-8B is fast AND Ollama serves the coordinators+leaves CONCURRENTLY, so the LEAD->COORDINATOR->leaf tree can actually COMPLETE the synthesis. openclaw.fanout {max_spawn_depth 2 + maxChildrenPerAgent/maxConcurrent caps} drives the prescriptive coordinator-tier prompt (_fanout_lead_message_multilevel); openclaw.context keeps each agent bounded. Run: --gpu T4 --config configs/lfm2_ollama_fanout_deep.json --task examples/web_research_fanout_deep.json. BRAVE_API_KEY from ~/.env.",
+  "_comment": "[MULTI-LEVEL DISABLED \u2014 set openclaw.fanout.multilevel=true to re-enable the experimental LEAD->COORDINATOR->leaf tier; it forms but never completes on these models, see docs/validation_findings.md] Layer-3 MULTI-LEVEL fan-out on the FAST T4/Ollama/LFM2.5 path with CONCURRENCY (OLLAMA_NUM_PARALLEL=4) \u2014 the substrate fix for multi-level completion that DiffusionGemma/L4 cannot do (vLLM --max-num-seqs 1 SERIALIZES the ~7-9 agent tree -> 20-min timeout; batched decode max_num_seqs>1 breaks block-diffusion serving). LFM2.5-8B is fast AND Ollama serves the coordinators+leaves CONCURRENTLY, so the LEAD->COORDINATOR->leaf tree can actually COMPLETE the synthesis. openclaw.fanout {max_spawn_depth 2 + maxChildrenPerAgent/maxConcurrent caps} drives the prescriptive coordinator-tier prompt (_fanout_lead_message_multilevel); openclaw.context keeps each agent bounded. Run: --gpu T4 --config configs/lfm2_ollama_fanout_deep.json --task examples/web_research_fanout_deep.json. BRAVE_API_KEY from ~/.env.",
   "model": {
     "id": "lfm2.5:8b"
   },
@@ -54,7 +54,8 @@
     "fanout": {
       "max_spawn_depth": 2,
       "max_children_per_agent": 4,
-      "max_concurrent": 12
+      "max_concurrent": 12,
+      "multilevel": false
     }
   }
 }

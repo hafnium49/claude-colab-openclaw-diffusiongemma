@@ -1,5 +1,5 @@
 {
-  "_comment": "DiffusionGemma 26B-A4B-NVFP4 on L4 + Layer-3 MULTI-LEVEL fan-out (openclaw.fanout.max_spawn_depth=2 -> remote runs `openclaw config set agents.defaults.subagents.maxSpawnDepth 2` and appends a coordinator-tier clause to the lead prompt). Use with examples/web_research_fanout_deep.json (6 sub-questions) so the LEAD may spawn 2-3 ISOLATED coordinators, each delegating its slice to leaf workers (LEAD->COORDINATOR->leaf), every level context-bounded. Same vLLM gemma4 native tool_calls + Layer-1 pruning as diffusiongemma_research.json. BRAVE_API_KEY forwarded from ~/.env. Run: --gpu L4 --config configs/diffusiongemma_fanout_deep.json --task examples/web_research_fanout_deep.json. (--max-num-seqs kept at 1: a live 47-min L4 verify proved vLLM never starts with max-num-seqs=4 for this BLOCK-DIFFUSION model \u2014 batched decode OOMs/hangs its sampler. Multi-level completion needs a SMALLER tree or a non-diffusion model, not batching.)",
+  "_comment": "[MULTI-LEVEL DISABLED \u2014 set openclaw.fanout.multilevel=true to re-enable the experimental LEAD->COORDINATOR->leaf tier; it forms but never completes on these models, see docs/validation_findings.md] DiffusionGemma 26B-A4B-NVFP4 on L4 + Layer-3 MULTI-LEVEL fan-out (openclaw.fanout.max_spawn_depth=2 -> remote runs `openclaw config set agents.defaults.subagents.maxSpawnDepth 2` and appends a coordinator-tier clause to the lead prompt). Use with examples/web_research_fanout_deep.json (6 sub-questions) so the LEAD may spawn 2-3 ISOLATED coordinators, each delegating its slice to leaf workers (LEAD->COORDINATOR->leaf), every level context-bounded. Same vLLM gemma4 native tool_calls + Layer-1 pruning as diffusiongemma_research.json. BRAVE_API_KEY forwarded from ~/.env. Run: --gpu L4 --config configs/diffusiongemma_fanout_deep.json --task examples/web_research_fanout_deep.json. (--max-num-seqs kept at 1: a live 47-min L4 verify proved vLLM never starts with max-num-seqs=4 for this BLOCK-DIFFUSION model \u2014 batched decode OOMs/hangs its sampler. Multi-level completion needs a SMALLER tree or a non-diffusion model, not batching.)",
   "model": {
     "id": "RedHatAI/diffusiongemma-26B-A4B-it-NVFP4",
     "name": "DiffusionGemma 26B-A4B IT NVFP4",
@@ -78,7 +78,8 @@
     "fanout": {
       "max_spawn_depth": 2,
       "max_children_per_agent": 4,
-      "max_concurrent": 12
+      "max_concurrent": 12,
+      "multilevel": false
     }
   }
 }
