@@ -1,18 +1,16 @@
 {
-  "_comment": "Layer 3 MULTI-LEVEL subagent fan-out (spawn depth 2). Like examples/web_research_fanout.json but with enough sub-questions (6) to justify a COORDINATOR tier: the LEAD may spawn 2-3 ISOLATED coordinator sub-agents, each owning a SLICE of the sub-questions and itself using sessions_spawn/sessions_yield to delegate to leaf workers (LEAD -> COORDINATOR -> leaf) so EVERY level stays context-bounded (no agent holds all the raw pages). The depth knob lives in the CONFIG json, NOT here: set openclaw.fanout.max_spawn_depth to 2 in the config (the remote applies it via `openclaw config set agents.defaults.subagents.maxSpawnDepth 2` during bootstrap, and appends a depth-aware clause to the lead message). With depth 1 (default) the same task still runs, just flat (lead spawns all 6 leaf workers itself). timeout_seconds is SHORT on purpose: the synthesis lands quickly but `openclaw agent --local --json` then HANGS until killed while subagent children are reaped, so the remote recovers the lead synthesis from the server-side trajectory (_lead_synthesis_from_trajectory) and judges success on captured text, not the CLI returncode. Run on L4 (capable model drives multi-level orchestration): --gpu L4 --config configs/diffusiongemma_research.json (add openclaw.fanout.max_spawn_depth=2) --task examples/web_research_fanout_deep.json. BRAVE_API_KEY forwarded from ~/.env.",
+  "_comment": "Layer 3 MULTI-LEVEL subagent fan-out (spawn depth 2), SMALLER 4-sub-question tree so the serial agent-turns fit a 20-min L4 budget (the 6-sub-q / 9-agent tree formed perfectly but timed out under --max-num-seqs 1; batched decode max_num_seqs>1 breaks DiffusionGemma's block-diffusion serving). With 4 sub-questions the prescriptive _fanout_lead_message_multilevel partitions into G=2 coordinators x 2 leaf workers (7 agents: lead + 2 coordinators + 4 leaves). Run on L4: --config configs/diffusiongemma_fanout_deep.json (max_spawn_depth 2, maxChildrenPerAgent 4, maxConcurrent 12, max-num-seqs 1) --task examples/web_research_fanout_deep.json. BRAVE_API_KEY from ~/.env.",
   "mode": "research",
   "orchestration": "subagent-fanout",
   "transport": "local",
   "timeout_seconds": 1200,
   "step_timeout_seconds": 700,
-  "topic": "Latest stable versions across language/runtime ecosystems (multi-level fan-out, depth 2)",
+  "topic": "Latest stable versions (multi-level fan-out, depth 2, 4 sub-qs / 7-agent tree)",
   "session_key": "lead-fanout-deep",
   "steps": [
     "the current latest stable version of Python (from python.org)",
     "the current latest LTS version of Node.js (from nodejs.org)",
     "the current latest stable version of Go (from go.dev)",
-    "the current latest stable version of Rust (from rust-lang.org)",
-    "the current latest stable version of Ruby (from ruby-lang.org)",
-    "the current latest LTS version of the Java Development Kit (from oracle.com or adoptium.net)"
+    "the current latest stable version of Rust (from rust-lang.org)"
   ]
 }
