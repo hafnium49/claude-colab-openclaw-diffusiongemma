@@ -161,8 +161,13 @@ recipe in `docs/t4_llama_cpp_serving.md`.
   the task (~10 min, ~0.8 units). Handle persists in `./runs/.sessions/<name>.json`; omit `--keep-session`
   on the last run to tear down. Historical gotcha (now SOLVED by `--reuse-session`): plain `--keep-session`
   + a fresh launcher invocation used to `colab new` a SECOND same-named runtime (duplicate billing) — never
-  do that; use `--reuse-session` for warm re-runs. Kill orphaned/colliding sessions via the colab-cli client
-  `unassign` API (`colab stop -s` can't reach store-less sessions). Always tear down promptly.
+  do that; use `--reuse-session` for warm re-runs. **Break-even (units = VM-up-time × rate, idle billed):**
+  keeping the VM warm between runs costs units for nothing, so reuse only nets savings if you reuse within
+  ~one cold-start of idle (~5 min T4, ~20 min L4) — else it goes net-negative; tear down on the last run.
+  Verified on T4 2026-06-24 (cold 315 s → warm 49 s). Mechanism + compute-unit math:
+  `docs/warm_session_reuse_and_costs.md`; the deep-research port: `docs/deep_research_port.md`. Kill
+  orphaned/colliding sessions via the colab-cli client `unassign` API (`colab stop -s` can't reach
+  store-less sessions). Always tear down promptly.
 
 ## 2026-06-18 — Live web search works (Ollama backend)
 

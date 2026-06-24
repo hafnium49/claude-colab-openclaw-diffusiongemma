@@ -165,6 +165,12 @@ llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). See `docs/t4_llama_cpp_serving.md
   units). The handle persists in `./runs/.sessions/<name>.json` (stable, so a different `--out` still attaches);
   it health-checks the warm backend first and respects `--keep-session` for teardown (omit on the last run).
   Only the TASK may vary across reuse runs — serve-affecting config changes need a fresh cold start.
+  **Idle billing / break-even (compute units = VM-up-time × rate, idle included):** keeping the VM warm
+  between runs costs units for nothing, so reuse only nets savings if you reuse **within ~one cold-start's
+  worth of idle** (~5 min T4, ~20 min L4); sit warm an hour and it goes net-negative — tear down on the last
+  run. VERIFIED on T4 2026-06-24 (cold 315 s → warm 49 s, bootstrap skipped). Full mechanism + the
+  compute-unit math: `docs/warm_session_reuse_and_costs.md`. The deep-research port itself:
+  `docs/deep_research_port.md`.
 - **Historical `--keep-session` GOTCHA (now SOLVED by `--reuse-session`):** re-running the launcher with plain
   `--keep-session` used to `colab new` a SECOND runtime with the same name → **duplicate billing + name
   collision**. Use `--reuse-session` for warm re-runs; reserve plain `--keep-session` (alone) for manual
