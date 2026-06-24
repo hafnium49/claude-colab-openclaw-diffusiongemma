@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -173,6 +174,33 @@ def extract_infer_text(raw: str) -> Optional[str]:
     return None
 
 
+# DiffusionGemma's block-diffusion decoder occasionally leaks ONE specific vocabulary token in place of a
+# whitespace/newline SEPARATOR — observed VERIFIED 2026-06-23 (runs/deepresearch3) as the glyph U+B3C5 '독'
+# wedged at section/list breaks in otherwise-English output ("analysis.독*", "premium.독2.", "math.독 where").
+# It is a decoder artifact, not content. Normalize each such GLUED occurrence (preceded by a non-space, so a
+# legitimately space-delimited CJK word in real CJK research is left intact) back to the separator it
+# replaced: a paragraph break before a Markdown list/heading marker, an empty string before existing
+# whitespace, else a single space. Only KNOWN leaked glyphs are touched — em/en dashes and real CJK runs are
+# preserved. Extend _DG_ARTIFACT_GLYPHS if a different leaked token is ever observed.
+_DG_ARTIFACT_GLYPHS = '독'  # '독' (U+B3C5 HANGUL SYLLABLE DOG)
+_DG_ARTIFACT_RE = re.compile(r'(?<=\S)[' + _DG_ARTIFACT_GLYPHS + r']')
+
+
+def _sanitize_model_text(text: Optional[str]) -> Optional[str]:
+    """Strip DiffusionGemma's stray separator-token artifact (see note above) from captured model text."""
+    if not text or not any(g in text for g in _DG_ARTIFACT_GLYPHS):
+        return text
+
+    def _repl(m) -> str:
+        after = text[m.end():m.end() + 6]
+        if re.match(r'\s*(?:[*+#]|-\s|\d+[.)])', after):
+            return '\n\n'
+        nxt = text[m.end()] if m.end() < len(text) else ''
+        return '' if nxt.isspace() else ' '
+
+    return _DG_ARTIFACT_RE.sub(_repl, text)
+
+
 def extract_agent_text(raw: str) -> Optional[str]:
     """Salvage the reply text from an `openclaw agent ... --json` log.
 
@@ -226,7 +254,7 @@ def extract_agent_text(raw: str) -> Optional[str]:
             idx = raw.find('{', max(end, idx + 1))
         except json.JSONDecodeError:
             idx = raw.find('{', idx + 1)
-    return best
+    return _sanitize_model_text(best)
 
 
 def load_forwarded_secrets() -> None:
@@ -1250,7 +1278,7 @@ def _lead_synthesis_from_trajectory(session_key: str) -> Optional[str]:
         return None
     finals = [e for e in events if e[2]]
     pick = max(finals, key=lambda e: e[0]) if finals else max(events, key=lambda e: e[0])
-    return pick[1]
+    return _sanitize_model_text(pick[1])
 
 
 def _fanout_lead_message(steps: List[str]) -> str:
