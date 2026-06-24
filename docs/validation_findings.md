@@ -302,8 +302,13 @@ three live runs, each surfacing a real fix:
 Operational notes for future runs: (1) the Brave FREE plan only sustains ~1 search/sec — the
 one-search-at-a-time rule is load-bearing, not advisory; a burstier task will 429 and overflow. (2) The
 contextWindow/2 output reserve means usable prompt budget is HALF the window — size the window for the
-accumulating shared session, not just the single largest turn. (3) DiffusionGemma occasionally emits a stray
-unicode glyph (e.g. `독`) at a section break — a decoder artifact, cosmetic, not a pipeline bug.
+accumulating shared session, not just the single largest turn. (3) DiffusionGemma occasionally leaks the stray
+glyph `독` (U+B3C5) in place of a SEPARATOR at a section/list break — a decoder artifact, not content.
+**FIXED 2026-06-24:** `_sanitize_model_text` normalizes it out of all captured agent text (wired into
+`extract_agent_text` + the fan-out trajectory recovery `_lead_synthesis_from_trajectory`) — a glued glyph
+(preceded by a non-space) becomes the separator it replaced (paragraph break before a Markdown list marker,
+else a single space), while em/en dashes and real space-delimited CJK are preserved. `self_test` carries a
+regression check, and importing the remote there also enforces the stdlib-only invariant.
 
 ## Open items
 

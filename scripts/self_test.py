@@ -111,5 +111,21 @@ if skill_const.strip() != skill_file.strip():
     raise SystemExit('skills/deep-research/SKILL.md is out of sync with the DEEP_RESEARCH_SKILL constant '
                      'in remote/remote_colab_openclaw_diffusiongemma.py — re-sync them')
 
+# Regression: the DiffusionGemma stray-glyph sanitizer must strip the U+B3C5 '독' separator-token decoder
+# artifact from captured model text while preserving legitimate punctuation (em/en dashes) and real
+# space-delimited CJK. (Importing the remote also enforces the stdlib-only invariant: a non-stdlib top-level
+# import would fail here, before any Colab run.)
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location('ocdg_remote', str(ROOT / 'remote/remote_colab_openclaw_diffusiongemma.py'))
+_mod = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+_san = _mod._sanitize_model_text
+assert _san('analysis.독*  x') == 'analysis.\n\n*  x', 'sanitizer: list-marker -> paragraph break'
+assert _san('hardware.독2.  x') == 'hardware.\n\n2.  x', 'sanitizer: numbered-marker -> paragraph break'
+assert _san('math.독 where') == 'math. where', 'sanitizer: mid-sentence -> drop (space already follows)'
+assert _san('(TCO)—including') == '(TCO)—including', 'sanitizer must preserve the em dash'
+assert _san('256M–1B tokens') == '256M–1B tokens', 'sanitizer must preserve the en dash'
+assert _san('the word 독 means poison') == 'the word 독 means poison', 'sanitizer must preserve space-delimited CJK'
+
 subprocess.run(['bash', '-n', str(ROOT / 'bin/colab_openclaw_diffusiongemma.sh')], check=True)
 print('self_test_ok')
