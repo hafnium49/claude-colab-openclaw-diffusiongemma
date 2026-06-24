@@ -101,7 +101,7 @@ bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
   --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/deepresearch
 ```
 
-`--keep-session` leaves the VM up for inspection (default tears it down after download). The launcher runs `scripts/self_test.py` first, so a self-test failure aborts before any VM is provisioned. The `--out` directory receives `openclaw_diffusiongemma_results.zip`, `manifest.json`, `research_result.md` (research mode), `colab_session_log.ipynb`, and local command logs.
+`--keep-session` leaves the VM up after download (default tears it down); pair it with **`--reuse-session`** (same `--session NAME`) on later runs to skip the ~20-min DiffusionGemma cold start and run only the task (warm reuse — `colab new` and bootstrap are both skipped; the session handle persists in `./runs/.sessions/<name>.json`). The launcher runs `scripts/self_test.py` first, so a self-test failure aborts before any VM is provisioned. The `--out` directory receives `openclaw_diffusiongemma_results.zip`, `manifest.json`, `research_result.md` (research mode), `colab_session_log.ipynb`, and local command logs.
 
 ## Claude Code integration
 

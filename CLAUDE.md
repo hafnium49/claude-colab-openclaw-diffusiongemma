@@ -59,7 +59,7 @@ bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 \
   --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/deepresearch
 ```
 
-`--keep-session` leaves the Colab runtime up for inspection (default tears it down after artifact download). The launcher runs `scripts/self_test.py` automatically before provisioning, so a self-test failure aborts the run.
+`--keep-session` leaves the Colab runtime up after download (default tears it down). Pair it with **`--reuse-session`** to amortize the expensive DiffusionGemma cold start (model download + vLLM load, ~20 min): run 1 cold-starts with `--keep-session` (leaving the L4 **warm**), and subsequent runs add `--reuse-session` (same `--session NAME`) to **skip both `colab new` and the bootstrap** and run only the task — turning a ~32-min run into a ~10-min one. `--reuse-session` attaches by NAME (no `colab new`, so no duplicate-runtime trap), stores the session handle in a stable `./runs/.sessions/<name>.json` (so a different `--out` still finds the same VM), health-checks the warm backend before running, and respects `--keep-session` for whether to tear down after (omit it on the last run). Only the TASK varies across reuse runs — serve-affecting config changes need a fresh cold start. The launcher runs `scripts/self_test.py` automatically before provisioning, so a self-test failure aborts the run.
 
 There is no test framework beyond `self_test.py`. **If you add a file the workflow depends on, add it to the `required` list in `scripts/self_test.py`** or the self-test gate will not cover it.
 

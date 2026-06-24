@@ -12,6 +12,7 @@ CONFIG="configs/llama_lfm2.json"
 TASK="examples/prompt_task.json"
 OUT_DIR="./runs/openclaw-dg"
 KEEP_SESSION=0
+REUSE=0
 REMOTE_SCRIPT="remote/remote_colab_openclaw_diffusiongemma.py"
 STUB_SCRIPT="remote/colab_exec_stub.py"
 
@@ -28,10 +29,26 @@ Options:
                       (task "mode":"research" runs the detached autonomous task instead of a
                        single prompt — see examples/research_task.json)
   --out DIR           Local output directory. Default: ./runs/openclaw-dg
-  --keep-session      Do not stop the Colab session after download
+  --keep-session      Do not stop the Colab session after download (leave it WARM for --reuse-session)
+  --reuse-session     ATTACH to an already-running session (same --session NAME): skip `colab new` AND
+                      the cold-start bootstrap (model download + serve load), run only the task. Pays the
+                      ~cold start ONCE; later runs are warm. Pair run 1 with --keep-session. Respects
+                      --keep-session for whether to leave the VM up afterward (omit it on the LAST run to
+                      tear down). If the warm backend is gone, drop --reuse-session to cold-start.
   -h, --help          Show help
 
 Examples:
+  # Warm-session workflow (pay the DiffusionGemma cold start ONCE, then iterate cheaply):
+  #   run 1 — cold start, leave the L4 warm:
+  bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 --session warm-dg --keep-session \
+    --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/dr1
+  #   run 2+ — WARM, skips the ~22-min bootstrap, runs only the ~task:
+  bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 --session warm-dg --reuse-session --keep-session \
+    --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/dr2
+  #   last run — reuse then TEAR DOWN (omit --keep-session):
+  bash bin/colab_openclaw_diffusiongemma.sh --gpu L4 --session warm-dg --reuse-session \
+    --config configs/diffusiongemma_deepresearch.json --task examples/web_research_citation.json --out ./runs/dr3
+
   # Validated llama.cpp / LFM2.5-8B-A1B smoke (single prompt) on a T4:
   bash bin/colab_openclaw_diffusiongemma.sh --config configs/llama_lfm2.json \
     --task examples/prompt_task.json --out ./runs/lfm2
@@ -62,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --task) TASK="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
     --keep-session) KEEP_SESSION=1; shift ;;
+    --reuse-session) REUSE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -129,7 +147,17 @@ need python
 # COLAB_AUTH=oauth2. Isolate this run's session state in a per-run scratch file so a concurrent
 # `colab` command can't race on the shared default state and prune this run's live session.
 COLAB_AUTH="${COLAB_AUTH:-adc}"
-COLAB_CONFIG="${COLAB_CONFIG:-$OUT_DIR/colab_session_state.json}"
+# A session you intend to KEEP and later REUSE must persist its handle in a STABLE place (keyed by
+# session NAME), not the per-out scratch file — so a later `--reuse-session --session NAME` (even with a
+# different --out) attaches to the SAME live runtime. Plain one-shot runs stay isolated per --out so
+# concurrent independent runs never race on a shared state file. Override either with COLAB_CONFIG=...
+if [[ "$KEEP_SESSION" -eq 1 || "$REUSE" -eq 1 ]]; then
+  SESSION_STATE_DIR="${OCDG_SESSION_DIR:-./runs/.sessions}"
+  mkdir -p "$SESSION_STATE_DIR"
+  COLAB_CONFIG="${COLAB_CONFIG:-$SESSION_STATE_DIR/$SESSION.json}"
+else
+  COLAB_CONFIG="${COLAB_CONFIG:-$OUT_DIR/colab_session_state.json}"
+fi
 colab() { command colab --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" "$@"; }
 # Absolute colab binary path for callers that must bypass the shell function: `timeout` execs a
 # real binary and cannot invoke a function (`timeout colab …` would run the binary WITHOUT
@@ -186,11 +214,31 @@ print(per*len(steps)+600)
 # Single-prompt poll budget: the infer timeout + margin.
 PROMPT_BUDGET=$(python -c "import json,sys; print(int(json.load(open(sys.argv[1])).get('timeout_seconds',900))+300)" "$TASK" 2>/dev/null || echo 1200)
 
-case "${GPU,,}" in
-  cpu|none|"") run colab new -s "$SESSION" ;;            # colab_ai backend needs no GPU
-  *)           run colab new -s "$SESSION" --gpu "$GPU" ;;
-esac
-run colab status -s "$SESSION"
+if [[ "$REUSE" -eq 1 ]]; then
+  # ATTACH to an already-running session: do NOT `colab new` (that would spin a SECOND same-named
+  # runtime and re-pay the cold start). Verify the kept VM is still alive before doing anything.
+  echo "[reuse] attaching to kept session '$SESSION' (skip colab new + cold-start bootstrap)" | tee -a "$LOG"
+  # `colab status` exits 0 even for a MISSING session (it just prints "... not found."), so gate on the
+  # OUTPUT, not the exit code: alive == has a hardware/status line AND no not-found marker. Capture with a
+  # hard timeout and `|| true` so a hung/failed status can't trip set -e before we report it.
+  REUSE_STATUS=$(timeout 90 "$COLAB_BIN" --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" status -s "$SESSION" 2>&1 || true)
+  printf '+ colab status -s %s\n%s\n' "$SESSION" "$REUSE_STATUS" | tee -a "$LOG"
+  if grep -qiE "not found|no .*session|unknown session" <<<"$REUSE_STATUS" \
+     || ! grep -qiE "Hardware|Status:|IDLE|BUSY|READY" <<<"$REUSE_STATUS"; then
+    echo "[reuse] session '$SESSION' is not alive (state file: $COLAB_CONFIG)." | tee -a "$LOG"
+    echo "[reuse] Start one first with:  --session $SESSION --keep-session   (or drop --reuse-session to cold-start)." | tee -a "$LOG"
+    exit 1
+  fi
+else
+  case "${GPU,,}" in
+    cpu|none|"") run colab new -s "$SESSION" ;;            # colab_ai backend needs no GPU
+    *)           run colab new -s "$SESSION" --gpu "$GPU" ;;
+  esac
+  run colab status -s "$SESSION"
+fi
+# Re-upload the orchestrator + config + (new) task every run, including reuse: cheap, and it guarantees
+# the kept VM runs the latest remote and THIS task. (Serve/gateway already running in reuse mode are NOT
+# restarted, so serve-affecting config changes need a fresh cold start, not --reuse-session.)
 run colab upload -s "$SESSION" "$REMOTE_SCRIPT" /content/remote_colab_openclaw_diffusiongemma.py
 run colab upload -s "$SESSION" "$CONFIG" /content/ocdg_config.json
 run colab upload -s "$SESSION" "$TASK" /content/ocdg_task.json
@@ -240,9 +288,27 @@ if [[ "$WEB_ENABLED" == "1" ]]; then forward_secrets; fi
 set +e
 
 # 1) Bootstrap: serve the backend + onboard OpenClaw, DETACHED, then poll until ready.
-upload_control bootstrap
-exec_remote
-if poll_worker bootstrap_status BOOTSTRAP_STATE "$BOOTSTRAP_BUDGET" bootstrap; then BOOT_OK=1; else BOOT_OK=0; fi
+#    In --reuse-session mode the kept VM is already bootstrapped, so SKIP the cold start (model download
+#    + vLLM load — the expensive ~20 min) and just confirm the backend is still ready: `bootstrap.done`
+#    + BOOTSTRAP_STATE=ready persist on the warm VM's disk, so one quick status exec settles it. If they
+#    are gone (serve stopped or the VM was reclaimed), report not-ready so the run collects diagnostics
+#    instead of running a task into a dead backend — drop --reuse-session to cold-start a fresh session.
+if [[ "$REUSE" -eq 1 ]]; then
+  upload_control bootstrap_status
+  REUSE_HEALTH=$(timeout 150 "$COLAB_BIN" --auth="$COLAB_AUTH" --config "$COLAB_CONFIG" exec -s "$SESSION" -f "$STUB_SCRIPT" --timeout 90 2>&1)
+  printf '%s\n' "$REUSE_HEALTH" >> "$LOG"
+  if grep -q "BOOTSTRAP_STATE=ready" <<<"$REUSE_HEALTH"; then
+    BOOT_OK=1
+    echo "[reuse] warm session ready — SKIPPED cold-start bootstrap (saved the model download + vLLM load)" | tee -a "$LOG"
+  else
+    BOOT_OK=0
+    echo "[reuse] warm backend NOT ready (serve/gateway stopped or VM reclaimed). Drop --reuse-session to cold-start a fresh session." | tee -a "$LOG"
+  fi
+else
+  upload_control bootstrap
+  exec_remote
+  if poll_worker bootstrap_status BOOTSTRAP_STATE "$BOOTSTRAP_BUDGET" bootstrap; then BOOT_OK=1; else BOOT_OK=0; fi
+fi
 
 # 2) Only infer if the backend is actually serving (skip the wasted exec otherwise). Each inference
 #    phase is DETACHED + polled too, so no long synchronous exec can hit the ~10.5-min websocket drop.

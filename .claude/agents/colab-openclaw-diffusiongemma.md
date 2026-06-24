@@ -159,9 +159,16 @@ llama.cpp → 9B, `infer_ok=true`, ~35 tok/s). See `docs/t4_llama_cpp_serving.md
   model's 256K context and OOMs (`5.59 GiB KV needed, 1.98 available`). Use RedHat's exact serve recipe.
 - **COST (`[[colab-gpu-costs]]`):** T4 ~1.8 / L4 ~4.8–5 / A100 ~15 CU·hr⁻¹; ~¥11.8/CU → L4 ≈ ¥57/hr,
   A100 ≈ ¥170/hr. A DiffusionGemma L4 bootstrap ≈ 3.5–4 CU ≈ ¥45. Tear sessions down promptly.
-- **`--keep-session` GOTCHA (cost trap):** re-running the launcher does **NOT** reuse a kept session —
-  `colab new` makes a SECOND runtime with the same name → **duplicate billing + name collision**.
-  `--keep-session` is for manual inspection only, not launcher re-runs. To kill an **orphaned** session
+- **Warm-session REUSE (skip the cold start):** run 1 with `--keep-session` leaves the L4 warm; later runs
+  add **`--reuse-session`** (same `--session NAME`) and the launcher ATTACHES by name (no `colab new`) and
+  SKIPS the ~20-min bootstrap, running only the task — a ~32-min run becomes ~10 min (~0.8 vs ~2.5 compute
+  units). The handle persists in `./runs/.sessions/<name>.json` (stable, so a different `--out` still attaches);
+  it health-checks the warm backend first and respects `--keep-session` for teardown (omit on the last run).
+  Only the TASK may vary across reuse runs — serve-affecting config changes need a fresh cold start.
+- **Historical `--keep-session` GOTCHA (now SOLVED by `--reuse-session`):** re-running the launcher with plain
+  `--keep-session` used to `colab new` a SECOND runtime with the same name → **duplicate billing + name
+  collision**. Use `--reuse-session` for warm re-runs; reserve plain `--keep-session` (alone) for manual
+  inspection. To kill an **orphaned** session
   (not in the CLI store, so `colab stop -s` can't reach it), use the client API:
   `from colab_cli.common import state; from colab_cli.auth import AuthProvider;
   state.auth_provider=AuthProvider.ADC; [state.client.unassign(a.endpoint) for a in

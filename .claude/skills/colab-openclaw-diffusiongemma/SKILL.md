@@ -155,10 +155,14 @@ recipe in `docs/t4_llama_cpp_serving.md`.
   serve arg** (JSON args were shell-stripped → "invalid loads value"), and the config passes
   **`--max-model-len 8192`** (else vLLM reserves KV for the 256K context → OOM). Use RedHat's recipe.
 - **Cost (`[[colab-gpu-costs]]`):** L4 ≈ ¥57/hr, A100 ≈ ¥170/hr (~3× L4), T4 cheapest; a DiffusionGemma
-  L4 bootstrap ≈ ¥45. **`--keep-session` does NOT make a launcher re-run reuse the session** — it
-  spins a SECOND same-named runtime (duplicate billing). Use it only for manual inspection; kill
-  orphaned/colliding sessions via the colab-cli client `unassign` API (`colab stop -s` can't reach
-  store-less sessions). Always tear down promptly.
+  L4 bootstrap ≈ ¥45 (~2.5 compute units; the cold start is ~20 of the ~32 min). **Reuse a warm session
+  to skip it:** run 1 `--keep-session` (leaves the L4 warm), later runs add `--reuse-session` (same
+  `--session NAME`) → the launcher ATTACHES by name (no `colab new`) and SKIPS bootstrap, running only
+  the task (~10 min, ~0.8 units). Handle persists in `./runs/.sessions/<name>.json`; omit `--keep-session`
+  on the last run to tear down. Historical gotcha (now SOLVED by `--reuse-session`): plain `--keep-session`
+  + a fresh launcher invocation used to `colab new` a SECOND same-named runtime (duplicate billing) — never
+  do that; use `--reuse-session` for warm re-runs. Kill orphaned/colliding sessions via the colab-cli client
+  `unassign` API (`colab stop -s` can't reach store-less sessions). Always tear down promptly.
 
 ## 2026-06-18 — Live web search works (Ollama backend)
 
