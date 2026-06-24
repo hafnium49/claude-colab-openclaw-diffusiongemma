@@ -310,6 +310,42 @@ glyph `독` (U+B3C5) in place of a SEPARATOR at a section/list break — a decod
 else a single space), while em/en dashes and real space-delimited CJK are preserved. `self_test` carries a
 regression check, and importing the remote there also enforces the stdlib-only invariant.
 
+## 2026-06-24 — vLLM nightly broke DiffusionGemma (reproducibility risk)
+
+A cold start on the DiffusionGemma/L4 path FAILED today where it was green 2026-06-23. Root cause is
+upstream, NOT our config: the `vllm --pre` nightly install resolved to **v0.23.0**, whose engine-core
+init rejects the model's custom code —
+`ValueError: Argument input_ids not found in the forward method of DiffusionGemmaDecoderModel`
+(`EngineCore failed to start` → bootstrap `BOOTSTRAP_STATE=failed`). The 2026-06-23 VERIFIED runs used
+**v0.23.1rc1.dev307+gaccaa434f**, which loads DiffusionGemma fine. So the `--pre nightly` version drifts
+day-to-day and can break the model's `--trust-remote-code` path.
+
+Implication: the DiffusionGemma configs (`diffusiongemma_*.json`, all of which `pip install -U vllm --pre
+... nightly/cu129`) are only reproducible on a vLLM build compatible with the model's custom modeling.
+Mitigation when a known-good build is needed: pin the install to a compatible version rather than `-U
+--pre` (caveat: specific dev-nightlies get garbage-collected from the index, so pin to the nearest
+installable good release/rc and re-verify). The fee-free T4 paths (llama.cpp / Ollama, prebuilt wheels)
+are unaffected — they don't ride the vLLM nightly. Discovered while live-demoing `--reuse-session`; the
+demo was redone on the T4/llama.cpp path (the reuse mechanism is backend-agnostic).
+
+## 2026-06-24 — `--reuse-session` (warm-session reuse) VERIFIED on T4
+
+The launcher's `--reuse-session` attach path (skip `colab new` + bootstrap on an already-warm session) is
+VERIFIED live on the T4/llama.cpp LFM2.5 path (`configs/llama_lfm2.json`, `runs/demo-t4-cold` →
+`runs/demo-t4-warm`):
+- **Run 1 (cold, `--keep-session`):** bootstrap READY at +265s; total **315s**; left the T4 warm
+  (`Keeping Colab session: warm-t4`), handle persisted in `runs/.sessions/warm-t4.json`.
+- **Run 2 (warm, `--reuse-session`, no keep):** `[reuse] warm session ready — SKIPPED cold-start
+  bootstrap`, went straight to `[mode] single prompt`, real inference (`openclaw-diffusiongemma-smoke-ok`,
+  `manifest.ok:true`), then `colab stop`. Total **49s** — the ~265s cold start eliminated (**~6.4× faster**).
+- Audited: run 2 issued **no `colab new`** and ran **no bootstrap phase** (only status → uploads → the task
+  exec → download → stop); the warm VM still held run 1's infer artifact (same-VM reuse confirmed); the
+  session was actually terminated afterward (no lingering billing).
+The attach-guard (a missing/dead warm session → clean error, no `colab new`, no VM) was dry-tested
+separately. Net: pay the cold start ONCE per warm session, then each reuse run is just the task. (The
+DiffusionGemma/L4 happy-path warm demo is blocked TODAY only by the vLLM-nightly regression above, not by
+the reuse mechanism.)
+
 ## Open items
 
 - [x] Land `infer_ok=true` on T4 via the decoupled harness — **done, run #6, 2026-06-15.**
